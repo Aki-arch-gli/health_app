@@ -877,7 +877,7 @@ today_quiz = random.choice(QUIZ_DATABASE)
 
 # 初回起動時にバックグラウンドで1回だけ実行されるように改善
 if not st.session_state.event_update:
-    load_external_data()
+    background_data_update()
     st.session_state.event_update = True
 
 if not st.session_state.user_code or len(str(st.session_state.user_code)) < 4:
