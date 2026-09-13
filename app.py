@@ -96,9 +96,8 @@ def run_background_update_if_needed():
         thread = threading.Thread(target=background_data_update, daemon=True)
         thread.start()
 
-# バックグラウンドバッチ処理の起動
-run_background_update_if_needed()
-
+# バックグラウンド更新はStreamlitの再実行・スレッド処理と競合するため、
+# 起動時には実行しない。イベント・ニュースの更新は各画面の「更新」ボタンから行う。
 @st.cache_data(ttl=3600*12, show_spinner=False)
 def get_daily_events():
     json_path = os.path.join("data", "daily_events.json")
@@ -875,10 +874,10 @@ day_seed = int(datetime.date.today().strftime("%Y%m%d"))
 random.seed(day_seed)
 today_quiz = random.choice(QUIZ_DATABASE)
 
-# 初回起動時にバックグラウンドで1回だけ実行されるように改善
-if not st.session_state.event_update:
-    background_data_update()
-    st.session_state.event_update = True
+# イベント・ニュースの自動バックグラウンド更新は行わない。
+# 必要な場合は各画面の「🔄 更新」ボタンから手動更新する。
+if "event_update" not in st.session_state:
+    st.session_state.event_update = False
 
 if not st.session_state.user_code or len(str(st.session_state.user_code)) < 4:
     st.session_state.user_code = secrets.token_hex(3).upper()
