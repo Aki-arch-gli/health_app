@@ -1,20 +1,35 @@
 import os
+import os
 from supabase import create_client
 
-supabase_url = os.environ.get("SUPABASE_URL")
-supabase_key = os.environ.get("SUPABASE_KEY")
 
-if not supabase_url or not supabase_key:
-    print("Error: SUPABASE_URL or SUPABASE_KEY is missing.")
-    exit(1)
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("SUPABASE_URL or SUPABASE_KEY is missing.")
+
+
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY
+)
+
 
 try:
-    # 公式ライブラリで接続初期化
-    supabase = create_client(supabase_url, supabase_key)
-    
-    # 認証エンドポイントへアクセスしてアクティブ状態を維持
-    response = supabase.auth.get_session()
-    print("Success! Supabase connection active.")
+    # 軽い読み取り処理を行ってSupabaseへアクセス
+    response = (
+        supabase
+        .table("app_users")
+        .select("username")
+        .limit(1)
+        .execute()
+    )
+
+    print("Supabase keep-alive succeeded.")
+    print(f"Fetched {len(response.data or [])} row(s).")
+
 except Exception as e:
-    print(f"Failed to keep alive: {e}")
-    exit(1)
+    print(f"Supabase keep-alive failed: {e}")
+    raise
