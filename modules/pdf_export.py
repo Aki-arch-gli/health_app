@@ -1,35 +1,9 @@
-from reportlab.pdfgen import canvas
+from modules.meal_print import build_meal_card
 
-def export_pdf(menu):
 
-    pdf = canvas.Canvas("献立表.pdf")
-
-    y = 800
-
-    pdf.drawString(
-        100,
-        y,
-        "Today's Menu"
-    )
-
-    y -= 40
-
-    for meal, food in menu.items():
-
-        pdf.drawString(
-            100,
-            y,
-            meal
-        )
-
-        pdf.drawString(
-            200,
-            y,
-            food["料理名"]
-        )
-
-        y -= 30
-
-    pdf.save()
-
-    return "献立表.pdf"
+def export_pdf(menu, shopping=()):
+    sections = [
+        (name, [menu.get(name, "")])
+        for name in ("朝食", "昼食", "夕食")
+    ]
+    return build_meal_card("本日の献立", sections, shopping)

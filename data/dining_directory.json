@@ -1,0 +1,53 @@
+{
+  "checked_on": "2026-11-24",
+  "areas": {
+    "田無駅周辺": [35.7275, 139.5393],
+    "ひばりヶ丘駅周辺": [35.7518, 139.5451],
+    "保谷駅周辺": [35.7478, 139.5680],
+    "東伏見駅周辺": [35.7285, 139.5639]
+  },
+  "menus": {
+    "matsuya": [
+      {
+        "title": "牛めし（並盛）",
+        "price": 480,
+        "vegetables": false,
+        "sources": ["https://bento.matsuyafoods.co.jp/matsuya/menu/gyumeshi/"]
+      },
+      {
+        "title": "牛めし（並盛）＋生野菜",
+        "price": 630,
+        "vegetables": true,
+        "sources": ["https://bento.matsuyafoods.co.jp/matsuya/menu/gyumeshi/", "https://bento.matsuyafoods.co.jp/matsuya/menu/sidemenu/"]
+      }
+    ],
+    "saizeriya": [
+      {
+        "title": "ミラノ風ドリア",
+        "price": 300,
+        "vegetables": false,
+        "sources": ["https://www.saizeriya.co.jp/menu-popular/"]
+      },
+      {
+        "title": "ミラノ風ドリア＋ほうれん草のソテー",
+        "price": 500,
+        "vegetables": true,
+        "sources": ["https://www.saizeriya.co.jp/menu-popular/"]
+      },
+      {
+        "title": "ミラノ風ドリア＋小エビのサラダ",
+        "price": 650,
+        "vegetables": true,
+        "sources": ["https://www.saizeriya.co.jp/menu-popular/"]
+      }
+    ]
+  },
+  "places": [
+    {"name": "松屋 田無駅前店", "group": "matsuya", "lat": 35.727533, "lon": 139.539316, "url": "https://pkg.navitime.co.jp/matsuyafoods/spot/detail?code=0000000913"},
+    {"name": "サイゼリヤ 田無駅南口店", "group": "saizeriya", "lat": 35.726701, "lon": 139.539076, "url": "https://shop.saizeriya.co.jp/sz_restaurant/spot/detail?code=1525"},
+    {"name": "松屋 ひばりが丘店", "group": "matsuya", "lat": 35.751954, "lon": 139.545121, "url": "https://pkg.navitime.co.jp/matsuyafoods/spot/detail?code=0000000084"},
+    {"name": "サイゼリヤ ひばりが丘駅南口駅前通り店", "group": "saizeriya", "lat": 35.750396, "lon": 139.544637, "url": "https://shop.saizeriya.co.jp/sz_restaurant/spot/detail?code=0840"},
+    {"name": "松屋 保谷店", "group": "matsuya", "lat": 35.747809, "lon": 139.567968, "url": "https://pkg.navitime.co.jp/matsuyafoods/spot/detail?code=0000000274"},
+    {"name": "松屋 東伏見店", "group": "matsuya", "lat": 35.728515, "lon": 139.563914, "url": "https://pkg.navitime.co.jp/matsuyafoods/spot/detail?code=0000000866"}
+  ]
+}

@@ -325,7 +325,7 @@ def health_record(username):
 
             df,
 
-            use_container_width=True
+            width="stretch"
 
         )
 

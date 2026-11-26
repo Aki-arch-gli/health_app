@@ -35,3 +35,9 @@ __pycache__/
 # Generated files
 *.mp3
 uploads/
+
+# Local trial files
+*.db-*
+.streamlit-qa/
+.kurashi-qa*/
+/試用版QR.png

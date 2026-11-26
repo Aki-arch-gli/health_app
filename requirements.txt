@@ -1,4 +1,4 @@
-streamlit
+streamlit>=1.67,<2
 pandas
 beautifulsoup4
 python-dotenv
@@ -11,3 +11,4 @@ reportlab
 requests
 supabase
 extra-streamlit-components
+itsdangerous>=2.2

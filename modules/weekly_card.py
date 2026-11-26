@@ -1,49 +1,10 @@
 import os
-import re
 from PIL import Image
 import streamlit as st
+from modules.dinner import menu_photo
 
-# ==========================================
-# 画像マッピングと処理（循環参照を防ぐためこちらに配置）
-# ==========================================
-IMAGE_MAPPING = [
-    (r"パン|トースト|サンドイッチ|ロールパン", "assets/breakfast_western.jpg"),
-    (
-        r"雑穀|ご飯|ごはん|おにぎり|のり|梅干し|納豆|粥|かゆ",
-        "assets/breakfast_japanese.jpg",
-    ),
-    (r"親子丼|牛丼|豚丼|カツ丼|天丼|丼", "assets/rice_grain.jpg"),
-    (r"鶏|チキン|鳥|から揚げ|唐揚げ|照り焼き", "assets/chicken_dish.jpg"),
-    (r"豚|ポーク|しゃぶしゃぶ|豚汁|生姜焼き|カツ", "assets/pork_dish.jpg"),
-    (r"鍋|水炊き|すき焼き|煮込み", "assets/pot_dish.jpg"),
-    (
-        r"ホイル焼き|煮魚|照り煮|さばのみそ煮|カレイ|煮付け",
-        "assets/fish_simmered.jpg",
-    ),
-    (
-        r"魚|鮭|サケ|塩焼き|ムニエル|フライ|刺身|ツナ",
-        "assets/fish_grilled.jpg",
-    ),
-    (r"みそ汁|味噌汁|スープ|お吸い物|汁", "assets/soup_miso.jpg"),
-    (
-        r"サラダ|あえもの|和え物|おひたし|ひじき|きんぴら|野菜",
-        "assets/salad_vegetable.jpg",
-    ),
-    (r"冷奴|豆腐|高野豆腐|湯豆腐|厚揚げ|おから", "assets/tofu_dish.jpg"),
-]
-
-DEFAULT_IMAGE_PATH = "assets/default.jpg"
-
-
-def get_menu_image_path(menu_text: str) -> str:
-    """献立テキストから対応する画像パスを判定"""
-    if not menu_text:
-        return DEFAULT_IMAGE_PATH
-    for pattern, img_path in IMAGE_MAPPING:
-        if re.search(pattern, menu_text):
-            if os.path.exists(img_path):
-                return img_path
-    return DEFAULT_IMAGE_PATH if os.path.exists(DEFAULT_IMAGE_PATH) else None
+def get_menu_image_path(menu_text):
+    return menu_photo(menu_text)[0]
 
 
 def display_resized_menu_image(
@@ -54,7 +15,7 @@ def display_resized_menu_image(
         try:
             image = Image.open(img_path)
             image.thumbnail((max_width, max_width))
-            st.image(image, caption=caption, use_container_width=False)
+            st.image(image, caption=caption, width="content")
         except Exception:
             st.write("🖼️")
     else:

@@ -1,6 +1,15 @@
+[global]
+developmentMode = false
+
 [theme]
 base = "light"
-primaryColor = "#ff4b4b"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f0f2f6"
-textColor = "#31333f"
+primaryColor = "#2D6040"
+backgroundColor = "#FFF8E9"
+secondaryBackgroundColor = "#F4ECCF"
+textColor = "#233B2C"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"

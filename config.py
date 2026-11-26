@@ -1,19 +1,20 @@
 import streamlit as st
 from dotenv import load_dotenv
 import os
+from streamlit.errors import StreamlitSecretNotFoundError
 
 load_dotenv()
 
 AI_MODEL = "gemini-3.5-flash"
 AI_BACKUP_MODEL = "gemini-3.1-flash-lite"
 
-try:
-    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-except:
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+def get_setting(name, default=None):
+    try:
+        value = st.secrets.get(name)
+    except StreamlitSecretNotFoundError:
+        value = None
+    return value if value is not None else os.getenv(name, default)
 
 
-try:
-    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-except:
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = get_setting("GEMINI_API_KEY")
+OPENAI_API_KEY = get_setting("OPENAI_API_KEY")

@@ -1,0 +1,240 @@
+{
+  "centers": [
+    {
+      "title": "栄町地域包括支援センター",
+      "phones": [
+        [
+          "042-438-7090",
+          ""
+        ]
+      ],
+      "area": [
+        "ひばりが丘北",
+        "北町",
+        "栄町",
+        "下保谷"
+      ],
+      "url": "https://www.city.nishitokyo.lg.jp/sisetu/hukusi/sakehoukatu.html",
+      "link": "市公式ページで受付時間を見る"
+    },
+    {
+      "title": "富士町地域包括支援センター",
+      "phones": [
+        [
+          "042-451-1203",
+          ""
+        ]
+      ],
+      "area": [
+        "東町",
+        "中町",
+        "富士町"
+      ],
+      "url": "https://www.city.nishitokyo.lg.jp/sisetu/hukusi/fujimatihoukatu.html",
+      "link": "市公式ページで受付時間を見る"
+    },
+    {
+      "title": "泉町地域包括支援センター",
+      "phones": [
+        [
+          "042-424-1200",
+          ""
+        ]
+      ],
+      "area": [
+        "北原町",
+        "泉町",
+        "住吉町"
+      ],
+      "url": "https://www.city.nishitokyo.lg.jp/sisetu/hukusi/izumihoukatu.html",
+      "link": "市公式ページで受付時間を見る"
+    },
+    {
+      "title": "田無町地域包括支援センター",
+      "phones": [
+        [
+          "042-467-8850",
+          ""
+        ]
+      ],
+      "area": [
+        "田無町",
+        "保谷町"
+      ],
+      "url": "https://www.city.nishitokyo.lg.jp/sisetu/hukusi/tanasihoukatu.html",
+      "link": "市公式ページで受付時間を見る"
+    },
+    {
+      "title": "緑町地域包括支援センター",
+      "phones": [
+        [
+          "042-461-7081",
+          ""
+        ]
+      ],
+      "area": [
+        "緑町",
+        "谷戸町",
+        "ひばりが丘"
+      ],
+      "url": "https://www.city.nishitokyo.lg.jp/sisetu/hukusi/midorihoukatu.html",
+      "link": "市公式ページで受付時間を見る"
+    },
+    {
+      "title": "西原町地域包括支援センター",
+      "phones": [
+        [
+          "042-451-8844",
+          ""
+        ]
+      ],
+      "area": [
+        "西原町",
+        "芝久保町"
+      ],
+      "url": "https://www.city.nishitokyo.lg.jp/sisetu/hukusi/nisiharahoukatu.html",
+      "link": "市公式ページで受付時間を見る"
+    },
+    {
+      "title": "向台町地域包括支援センター",
+      "phones": [
+        [
+          "042-468-2340",
+          ""
+        ]
+      ],
+      "area": [
+        "南町",
+        "向台町"
+      ],
+      "url": "https://www.city.nishitokyo.lg.jp/sisetu/hukusi/mukoudaihoukatu.html",
+      "link": "市公式ページで受付時間を見る"
+    },
+    {
+      "title": "新町地域包括支援センター",
+      "phones": [
+        [
+          "042-462-1695",
+          ""
+        ]
+      ],
+      "area": [
+        "新町",
+        "柳沢",
+        "東伏見"
+      ],
+      "url": "https://www.city.nishitokyo.lg.jp/sisetu/hukusi/sinmatihoukatu.html",
+      "link": "市公式ページで受付時間を見る"
+    }
+  ],
+  "centersSource": "https://www.city.nishitokyo.lg.jp/kenko_hukusi/koreisyasien/chiikihoukatu.html",
+  "nationalCenters": "https://www.kaigokensaku.mhlw.go.jp/",
+  "nationalLiving": "https://www.mhlw.go.jp/stf/newpage_08152.html",
+  "localGeneral": {
+    "title": "西東京市 福祉丸ごと相談窓口（ほっとネットステーション）",
+    "description": "相談先がわからないことや複数の困りごとを、地域福祉コーディネーターに相談できます。",
+    "phones": [
+      ["042-497-4158", "田無ステーション"],
+      ["042-438-9205", "保谷ステーション"]
+    ],
+    "url": "https://www.city.nishitokyo.lg.jp/kenko_hukusi/tiiki_fukushi/nishitokyocity20200904112915746.html"
+  },
+  "localLiving": {
+    "title": "西東京市 生活サポート相談窓口",
+    "description": "食費や家計、仕事など、生活の困りごとを相談できます。",
+    "phones": [
+      [
+        "042-420-2809",
+        "田無庁舎"
+      ],
+      [
+        "042-438-4023",
+        "保谷庁舎"
+      ]
+    ],
+    "url": "https://www.city.nishitokyo.lg.jp/kenko_hukusi/seikatuenzyo/seikatsusoudann.html"
+  },
+  "localNutrition": {
+    "title": "西東京市 栄養・食生活相談",
+    "description": "管理栄養士が食生活の相談を受け付けています。電話で申し込みます。",
+    "phones": [
+      [
+        "042-439-3526",
+        "健康課"
+      ]
+    ],
+    "url": "https://www.city.nishitokyo.lg.jp/kenko_hukusi/seizinhoken/sodan/eiyousoudan.html"
+  },
+  "mentalHealth": {
+    "title": "こころの相談窓口",
+    "description": "気持ちのつらさや孤立について、電話やSNSなど、話しやすい方法で探せます。",
+    "url": "https://www.mhlw.go.jp/mamorouyokokoro/soudan/",
+    "link": "厚生労働省の一覧を開く"
+  },
+  "topics": {
+    "unsure": {
+      "label": "複数の悩み・相談先がわからない",
+      "options": [
+        "お金と健康の悩みが重なっている",
+        "以前相談したが、別の窓口を案内された",
+        "どの制度の対象か分からない",
+        "一緒に考えてくれる人を探している"
+      ],
+      "firstQuestion": "いくつか困りごとがあるので、まず一緒に整理してもらえますか"
+    },
+    "money": {
+      "label": "食費・生活費",
+      "options": [
+        "食費が足りない",
+        "日々の支払いが心配",
+        "支援の利用方法を知りたい",
+        "今日食べるものの用意が難しい"
+      ],
+      "firstQuestion": "どんな支援や相談を利用できますか"
+    },
+    "shopping": {
+      "label": "買い物・食事の用意",
+      "options": [
+        "買い物に行くのが難しい",
+        "調理の負担が大きい",
+        "配食などを知りたい"
+      ],
+      "firstQuestion": "買い物や食事の用意を助けるサービスはありますか"
+    },
+    "care": {
+      "label": "介護・高齢の家族",
+      "options": [
+        "家族の介護に負担を感じる",
+        "離れて暮らす家族が心配",
+        "誰に相談するか迷っている"
+      ],
+      "firstQuestion": "本人や家族が受けられる支援には何がありますか"
+    },
+    "nutrition": {
+      "label": "栄養・食生活",
+      "options": [
+        "食事の量や組み合わせが気になる",
+        "食事について専門職に聞きたい",
+        "食事の用意を続けるのが難しい"
+      ],
+      "firstQuestion": "食事について管理栄養士などに相談できますか"
+    },
+    "feelings": {
+      "label": "気持ち・孤立",
+      "options": [
+        "気持ちの負担が大きい",
+        "話せる相手が少ない",
+        "相談のきっかけを探している"
+      ],
+      "firstQuestion": "話しやすい相談方法や地域の居場所はありますか"
+    }
+  },
+  "followupQuestions": {
+    "first": "最初にどこへ、どのように相談すればよいですか",
+    "bring": "最初の相談までに準備するものはありますか",
+    "fee": "利用できるサービスの費用や対象条件を教えてもらえますか",
+    "family": "家族からでも相談できますか",
+    "visit": "外出が難しい場合に利用できる相談方法はありますか",
+    "privacy": "相談した内容は、どの範囲で共有されますか"
+  }
+}

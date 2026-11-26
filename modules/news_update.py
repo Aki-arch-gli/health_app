@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 
 from modules.ai import generate_daily_news
+from modules.runtime_paths import NEWS_FILE
 
 
 def update_news():
@@ -14,7 +15,7 @@ def update_news():
     print(news)
 
     with open(
-        "database/daily_news.json",
+        NEWS_FILE,
         "w",
         encoding="utf-8"
     ) as f:

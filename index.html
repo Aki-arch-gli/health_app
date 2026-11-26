@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="今夜の献立を探し、食や暮らしの困りごとを地域の相談先につなげるアプリ。">
+  <title>暮らしの食卓 | 献立と生活相談</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="recipes.js" defer></script>
+  <script src="planner.js" defer></script>
+  <script src="support.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">本文へ移動</a>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="#main"><span class="brand-mark" aria-hidden="true">食</span>暮らしの食卓</a>
+      <nav aria-label="メインメニュー">
+        <a href="#meal">献立</a>
+        <a href="#consult">生活相談</a>
+        <a href="#saved">保存した献立</a>
+      </nav>
+    </div>
+  </header>
+  <main id="main" class="wrap">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="section-label"><span></span> 食と暮らしのサポート</p>
+        <h1 id="hero-title">今日の食卓を、<br>無理なく整える。</h1>
+        <p>家にある食材から、今夜つくれそうな一食を。<br class="desktop-break">買い物や暮らしの困りごとは、地域の相談先へ。</p>
+        <div class="actions">
+          <a class="button primary" href="#meal">今夜の献立を探す <span aria-hidden="true">↓</span></a>
+          <a class="quiet-link" href="#consult">生活の相談先を探す <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+      <img class="hero-photo" src="assets/dinner-hero.jpg" alt="焼き鮭、ご飯、青菜、みそ汁を並べた食卓" width="1200" height="800" fetchpriority="high">
+    </section>
+
+    <section id="meal" class="section" aria-labelledby="meal-heading">
+      <div class="section-intro">
+        <h2 id="meal-heading">献立を探す</h2>
+        <p>人数と時間を選ぶと、主食・主菜・副菜を組み合わせます。</p>
+      </div>
+      <div class="meal-layout">
+        <form id="meal-form" class="panel controls">
+          <h3>今日の条件</h3>
+          <div class="field-pair">
+            <label>人数
+              <select name="people"><option value="1">1人分</option><option value="2">2人分</option><option value="3">3人分</option><option value="4">4人分</option><option value="5">5人分</option><option value="6">6人分</option></select>
+            </label>
+            <label>調理時間の目安
+              <select name="limit"><option value="15">15分以内</option><option value="20" selected>20分以内</option><option value="25">25分以内</option><option value="40">40分以内</option></select>
+            </label>
+          </div>
+          <label>何日分
+            <select name="count"><option value="1">今夜の夕食</option><option value="7">1週間の夕食</option></select>
+          </label>
+          <details id="stock-settings">
+            <summary>家にある食材・使わない食材</summary>
+            <label>食材名で絞る<input type="search" id="food-search" placeholder="豆腐、卵など"></label>
+            <p class="muted">必要な量がある食材を選んでください。</p>
+            <fieldset><legend>家にある食材</legend><div id="stock-list" class="option-grid"></div></fieldset>
+            <label class="check"><input type="checkbox" name="pantry" checked> 基本の調味料は家にある</label>
+            <p class="muted small" id="pantry-names"></p>
+            <fieldset><legend>好みで使わない食材</legend><div id="exclude-list" class="option-grid"></div></fieldset>
+          </details>
+          <label>買い足し
+            <select name="shopping"><option value="any">指定なし</option><option value="less">なるべく少なく</option><option value="none">買い足しなし</option></select>
+          </label>
+          <button class="button primary full" type="submit">この条件で探す <span aria-hidden="true">→</span></button>
+          <p class="muted small">調理時間は炊飯を除いた目安です。療養食や食物アレルギーの判断は、専門職や商品の原材料表示で確認してください。</p>
+        </form>
+        <div id="meal-result" class="result" aria-label="献立の結果">
+          <p id="meal-status" role="status"></p>
+          <div id="menus"></div>
+          <div id="menu-actions" class="actions" hidden>
+            <button class="button secondary" id="discover" type="button">別の献立を探す</button>
+            <button class="button secondary" id="print-menu" type="button">献立カードを印刷</button>
+          </div>
+          <div id="buying-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="consult" class="section consult-section" aria-labelledby="consult-heading">
+      <div class="section-intro">
+        <h2 id="consult-heading">暮らしの困りごとを相談する</h2>
+        <p>心配なことを選ぶと、相談先と、電話などで伝えるためのメモを表示します。</p>
+      </div>
+      <div class="consult-layout">
+        <form id="consult-form" class="panel controls">
+          <label>何に困っていますか<select name="topic" id="topic" required></select></label>
+          <fieldset id="circumstance-field"><legend>当てはまること <span class="muted small">任意</span></legend><div id="circumstances"></div></fieldset>
+          <label class="check" id="older-label" hidden><input type="checkbox" name="older"> 高齢の方の買い物や食事について</label>
+          <label>相談したい方の地域
+            <select name="region"><option value="other">西東京市以外・わからない</option><option value="nishitokyo">西東京市</option></select>
+          </label>
+          <label id="town-label" hidden>西東京市の町名 <span class="muted small">任意</span><select name="town" id="town"><option value="">選ばずに探す</option></select></label>
+          <button class="button primary full" type="submit">相談先とメモを見る <span aria-hidden="true">→</span></button>
+        </form>
+        <div id="consult-result" class="result">
+          <p id="consult-status" role="status"></p>
+          <div id="contacts"></div>
+          <div id="memo-panel" class="panel memo" hidden>
+            <h3>相談するときのメモ</h3>
+            <p class="muted small">書き足した内容はこの画面だけに表示されます。</p>
+            <label for="memo">電話や面談で読み上げる内容</label>
+            <textarea id="memo" rows="6" maxlength="1500" spellcheck="false" autocomplete="off"></textarea>
+            <div id="ai-panel" hidden>
+              <label class="check"><input type="checkbox" id="ai-consent"> 私は18歳以上です。メモの作成に、選んだ困りごとと項目のみをGoogle Geminiへ送ることに同意します。</label>
+              <button class="button secondary" id="ai-memo" type="button" disabled>AIで聞きたいことを整理</button>
+              <p id="ai-status" class="muted small" role="status"></p>
+            </div>
+          </div>
+          <aside class="urgent" aria-label="緊急時の連絡先">
+            <p>急病やけがで救急車が必要なときは <a href="tel:119"><strong>119</strong></a> へ。</p>
+            <p>死にたい気持ちなど、つらさを人に話したいときは <a href="https://www.lifelink.or.jp/inochisos/?oai_link_source=model_response_hotline">＃いのちSOS</a> に相談できます。</p>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section id="saved" class="section" aria-labelledby="saved-title">
+      <div class="section-intro">
+        <h2 id="saved-title">保存した献立</h2>
+        <p>このブラウザーで、また作りたい夕食を見返せます。</p>
+      </div>
+      <div id="favorites" class="favorites"></div>
+    </section>
+  </main>
+  <section id="print-sheet" aria-label="印刷用献立カード"></section>
+  <footer class="site-footer"><div class="wrap footer-inner"><span>暮らしの食卓</span><a href="#main">ページの先頭へ ↑</a></div></footer>
+  <noscript><p class="wrap">献立を作成するには、ブラウザーでJavaScriptを有効にしてください。</p></noscript>
+</body>
+</html>

@@ -4,6 +4,7 @@ import datetime
 import time
 import random
 import hashlib
+from html import escape
 import secrets
 import os
 import threading
@@ -13,13 +14,28 @@ import sqlite3
 import pandas as pd
 from zoneinfo import ZoneInfo
 from PIL import Image
+from itsdangerous import BadSignature, URLSafeTimedSerializer
+from config import get_setting
+from modules.dinner import menu_photo
+from modules.dining_ui import render_dining
+from modules.runtime_paths import ACTIVITY_DB, TRIAL_MODE, UPLOADS_DIR, prepare_runtime_storage
+from modules.trial_ui import require_trial_invitation
+from modules.kurashi_ui import (
+    apply_theme, brand, home_banner, photo_for, render_consultation,
+    render_dinner, render_dinner_favorites,
+)
 from cookies_manager import EncryptedCookiesManager
 
 # ========= モジュール ==========
 from modules.calorie import calculate_calories
+from modules import wellbeing
+from modules.wellbeing_ui import (
+    render_measurements, render_messages, render_shared, render_today, render_watch_settings,
+)
 from modules.bmi import calculate_bmi
 from modules.database import (
     create_tables,
+    update_schema_for_roadmap,
     add_user,
     update_point,
     get_ranking,
@@ -45,9 +61,6 @@ from modules.database import (
     get_daily_task,
     save_daily_task,
     add_family_log,
-    get_family_logs,
-    add_family_comment,
-    get_family_comments,
     get_posts_filtered
 )
 from modules.weekly_comment import weekly_comment
@@ -61,18 +74,25 @@ from modules.nutrition_chart import nutrition_chart
 from modules.pdf_export import export_pdf
 from modules.voice import create_voice
 from modules.recommended_card import recommended_card
-from modules.health import health_record
 from modules.ai import generate_ai_menu
 from modules.weekly_card import weekly_card
 from modules.ai_parser import parse_ai_menu
 from modules.meal_card import meal_card
-from modules.health_report import create_health_report
 from modules.health_dashboard import create_dashboard_data
 from modules.fridge_recipe import recommend_from_fridge
 from modules.news import load_news
 from modules.news_update import update_news
 from modules.community_news import get_local_events,get_local_news
 from modules.event_service import get_home_events, refresh_events
+
+st.set_page_config(
+    page_title="暮らしの食卓",
+    page_icon="🍱",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+if TRIAL_MODE:
+    require_trial_invitation()
 # ========= 追加: 目標カロリーに最も近い最適献立を厳選抽出するラッパー関数 =========
 def hash_pass(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
@@ -305,43 +325,8 @@ def get_ingredients_enhanced(text):
 # 1. 料理画像のマッピングと自動選択ヘルパー関数
 # ==========================================
 # assetsフォルダ内の画像対応辞書（キーワード: 画像パス）
-IMAGE_MAPPING = [
-    # 朝食・主食系
-    (r"パン|トースト|サンドイッチ|ロールパン", "assets/breakfast_western.jpg"),
-    (r"雑穀|ご飯|ごはん|おにぎり|のり|梅干し|納豆|粥|かゆ", "assets/breakfast_japanese.jpg"),
-    (r"親子丼|牛丼|豚丼|カツ丼|天丼|丼", "assets/rice_grain.jpg"),
-    # 主菜（肉類・魚類・鍋）
-    (r"鶏|チキン|鳥|から揚げ|唐揚げ|照り焼き", "assets/chicken_dish.jpg"),
-    (r"豚|ポーク|しゃぶしゃぶ|豚汁|生姜焼き|カツ", "assets/pork_dish.jpg"),
-    (r"鍋|水炊き|すき焼き|煮込み", "assets/pot_dish.jpg"),
-    (r"ホイル焼き|煮魚|照り煮|さばのみそ煮|カレイ|煮付け", "assets/fish_simmered.jpg"),
-    (r"魚|鮭|サケ|塩焼き|ムニエル|フライ|刺身|ツナ", "assets/fish_grilled.jpg"),
-    # 副菜・汁物・豆腐
-    (r"みそ汁|味噌汁|スープ|お吸い物|汁", "assets/soup_miso.jpg"),
-    (r"サラダ|あえもの|和え物|おひたし|ひじき|きんぴら|野菜", "assets/salad_vegetable.jpg"),
-    (r"冷奴|豆腐|高野豆腐|湯豆腐|厚揚げ|おから", "assets/tofu_dish.jpg"),
-]
-
-DEFAULT_IMAGE_PATH = "assets/default.jpg"
-
-
-def get_menu_image_path(menu_text: str) -> str:
-    """献立のテキストから最も適した画像パスを1つだけ選出する（重複・複数表示防止）"""
-    if not menu_text:
-        return DEFAULT_IMAGE_PATH
-
-    # キーワード判定（最初に見つかった代表画像1枚を採用）
-    for pattern, img_path in IMAGE_MAPPING:
-        if re.search(pattern, menu_text):
-            if os.path.exists(img_path):
-                return img_path
-
-    # 条件に合う画像がない場合は一汁三菜のデフォルト画像
-    return (
-        DEFAULT_IMAGE_PATH
-        if os.path.exists(DEFAULT_IMAGE_PATH)
-        else None
-    )
+def get_menu_image_path(menu_text):
+    return menu_photo(menu_text)[0]
 
 
 def display_resized_menu_image(
@@ -353,7 +338,7 @@ def display_resized_menu_image(
             image = Image.open(img_path)
             # 画像のアスペクト比を維持して縮小（カードが大きくなるのを防ぐ）
             image.thumbnail((max_width, max_width))
-            st.image(image, caption=caption, use_container_width=False)
+            st.image(image, caption=caption, width="content")
         except Exception:
             st.write("🖼️ (画像読み込みエラー)")
     else:
@@ -361,11 +346,20 @@ def display_resized_menu_image(
 
 
 # ========= フォルダ存在確認 (画像漏洩防止用フォルダ分離) =========
-UPLOAD_SENIOR_DIR = os.path.join("uploads", "seniors")
-UPLOAD_STUDENT_DIR = os.path.join("uploads", "students")
+UPLOAD_SENIOR_DIR = UPLOADS_DIR / "seniors"
+UPLOAD_STUDENT_DIR = UPLOADS_DIR / "students"
 
-os.makedirs(UPLOAD_SENIOR_DIR, exist_ok=True)
-os.makedirs(UPLOAD_STUDENT_DIR, exist_ok=True)
+
+def save_uploaded_photo(upload):
+    directory = UPLOAD_STUDENT_DIR if "学生" in st.session_state.user_role else UPLOAD_SENIOR_DIR
+    with Image.open(upload) as photo:
+        extension = {"JPEG": ".jpg", "PNG": ".png"}.get(photo.format)
+        if extension is None:
+            raise ValueError("JPEGまたはPNGの画像を選んでください。")
+        photo.verify()
+    target = directory / f"{secrets.token_hex(16)}{extension}"
+    target.write_bytes(upload.getbuffer())
+    return str(target)
 
 # ========= 音声読み上げ用 JavaScript ==========
 def speak_text(text: str):
@@ -387,7 +381,7 @@ def speak_text(text: str):
 # ========= 画像表示フォールバック ==========
 def display_safe_image(img_path: str, caption: str = "", fallback_emoji: str = "🍲"):
     if img_path and os.path.exists(img_path):
-        st.image(img_path, caption=caption, use_container_width=True)
+        st.image(img_path, caption=caption, width="stretch")
     else:
         st.markdown(f"""
         <div style="background-color:#E8F5E9; border:2px dashed #2E7D32; padding:25px; border-radius:12px; text-align:center;">
@@ -400,28 +394,17 @@ def display_safe_image(img_path: str, caption: str = "", fallback_emoji: str = "
 def hash_pass(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
-ADMIN_PWD = st.secrets["ADMIN_PASSWORD"]
-FACILITY_PWD = st.secrets["FACILITY_PASSWORD"]
-FAMILY_PWD = st.secrets["FAMILY_PASSWORD"]
 
-ADMIN_HASH = hash_pass(ADMIN_PWD)
-FACILITY_HASH = hash_pass(FACILITY_PWD)
-FAMILY_HASH = hash_pass(FAMILY_PWD)
-
-# ========= ページ初期設定 ==========
-st.set_page_config(
-    page_title="高齢者健康・交流アプリ",
-    page_icon="🍱",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-create_tables()
+ROLE_CODES = {
+    "⚙️ システム管理者": "" if TRIAL_MODE else str(get_setting("ADMIN_PASSWORD") or ""),
+    "🏥 施設職員モード": "" if TRIAL_MODE else str(get_setting("FACILITY_PASSWORD") or ""),
+    "👨‍👩‍👧 家族アカウント": "" if TRIAL_MODE else str(get_setting("FAMILY_PASSWORD") or ""),
+}
 
 # ==========================
 # SessionState 初期化
 # ==========================
-today_str = str(date.today())
+today_str = wellbeing.today_in_japan().isoformat()
 
 DEFAULT_SESSION = {
     "is_logged_in": False, 
@@ -433,9 +416,9 @@ DEFAULT_SESSION = {
     "facility_authenticated": False,
     "senior_surname": "田中",
     "senior_fullname": "田中 太郎",
-    "senior_age": 75,
-    "senior_birthdate": date(1951, 4, 15),
-    "senior_disease": "高血圧",
+    "senior_age": 50,
+    "senior_birthdate": None,
+    "senior_disease": "なし",
     "senior_gender": "男性",
     "senior_height": 165.0,
     "senior_weight": 58.0,
@@ -444,9 +427,6 @@ DEFAULT_SESSION = {
     "dislike_foods": [],
     "favorite_food_type": "指定なし",
     "preferred_season": "auto",
-    "user_code": "",
-    "linked_senior_code": "",
-    "linked_senior_name": "田中 太郎",
     "facility_name": "特別養護老人ホーム さくら園",
     "current_page": "🏠 ホーム",
     "menu_text": None,
@@ -456,17 +436,14 @@ DEFAULT_SESSION = {
     "dark_mode": False,
     "font_size": 26,
     "voice_enabled": True,
-    "genki_point": 180,
+    "genki_point": 0,
     "user_role": "👴 高齢者（本人）",
     "tutorial_finished": True,
     "tutorial_page": 1,
-    "water_today": 1000,
-    "walk_steps": 3500,
-    "continue_days": 18,
     "small_goals": {"gratitude": False, "walk_10m": False, "water_1glass": False, "photo": False},
     "omikuji_done": False,
     "omikuji_result": None,
-    "facility_announcements": ["📢 8月15日(土) 夏祭り納涼大会を開催します！ご家族様の面会も歓迎です。", "📌 熱中症警戒アラートが発令中です。水分補給の徹底をお願いいたします。"]
+    "facility_announcements": []
 }
 
 for key, value in DEFAULT_SESSION.items():
@@ -527,7 +504,8 @@ def generate_best_calorie_menu(age, disease, calorie, season="auto", style=None,
             age=age,
             disease=disease,
             calorie=calorie,
-            season="auto"
+            season="auto",
+            dislike=dislike
         )
 
     return best_menu
@@ -558,8 +536,11 @@ def calculate_calories(age, gender, height, weight, activity_level="普通"):
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def init_db():
+    prepare_runtime_storage()
     create_tables()
-    conn = sqlite3.connect('app_data.db')
+    update_schema_for_roadmap()
+    wellbeing.init_wellbeing()
+    conn = sqlite3.connect(ACTIVITY_DB)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS daily_stamps (
                     user_id TEXT, date TEXT, action_type TEXT,
@@ -588,12 +569,15 @@ from supabase import create_client, Client
 
 @st.cache_resource
 def get_supabase() -> Client:
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+    return create_client(get_setting("SUPABASE_URL"), get_setting("SUPABASE_KEY"))
+
+
+accounts_configured = not TRIAL_MODE and bool(get_setting("SUPABASE_URL") and get_setting("SUPABASE_KEY"))
+
 
 def register_user_db(username, password, role, age, gender, height, weight, disease):
-    supabase = get_supabase()
+    if not accounts_configured:
+        return wellbeing.register_local(username, password, role, age, gender, height, weight, disease)
     pwd_hash = hash_pass(password)
     u_code = secrets.token_hex(3).upper()
     data = {
@@ -608,7 +592,7 @@ def register_user_db(username, password, role, age, gender, height, weight, dise
         "user_code": u_code
     }
     try:
-        supabase.table("app_users").insert(data).execute()
+        get_supabase().table("app_users").insert(data).execute()
         add_or_update_user(username, role, age, gender, height, weight, "普通", disease, role)
         return True, u_code
     except Exception as e:
@@ -617,70 +601,59 @@ def register_user_db(username, password, role, age, gender, height, weight, dise
         return False, f"登録エラー: {e}"
 
 def authenticate_user_db(username, password):
-    supabase = get_supabase()
+    if not accounts_configured:
+        return wellbeing.authenticate_local(username, password)
     pwd_hash = hash_pass(password)
     try:
-        res = supabase.table("app_users").select("*").eq("username", username).eq("password_hash", pwd_hash).execute()
+        res = get_supabase().table("app_users").select("*").eq("username", username).eq("password_hash", pwd_hash).execute()
         if res.data and len(res.data) > 0:
-            u = res.data[0]
-            return (u["username"], u["role"], u["age"], u["gender"], u["height"], u["weight"], u["disease"], u["user_code"])
+            return res.data[0]
         return None
     except Exception:
         return None
 
-# ========= 🔑 クッキー管理の初期化 =========
-# secrets.toml に 'COOKIES_PASSWORD' (適当な長い文字列) を設定してください。
-# 設定されていない場合のフォールバック（開発用）
-cookies_pwd = st.secrets.get("COOKIES_PASSWORD", "a-very-secret-phrase-stored-in-secrets")
+cookie_secret = None if TRIAL_MODE else get_setting("COOKIES_PASSWORD")
+signin_cookie = "signed_session_v1"
+signer = URLSafeTimedSerializer(cookie_secret, salt="kurashi-login") if cookie_secret else None
+cookies = EncryptedCookiesManager(prefix="kurashi", password=cookie_secret) if signer and accounts_configured else None
 
-cookies = EncryptedCookiesManager(
-    prefix="mimamori/api",
-    password=cookies_pwd,
-)
 
-if not cookies.ready():
-    # クッキーの準備ができていない場合は、一度処理を止めて再描画を待つ必要がある
-    st.stop()
+def open_login():
+    st.session_state.is_guest_mode = False
+    st.session_state.show_login_form = True
+    st.rerun()
+
+
+def restore_profile(account):
+    st.session_state.update(
+        is_logged_in=True, is_guest_mode=False, show_login_form=False,
+        senior_fullname=account["username"], user_id=account["username"],
+        wellbeing_id=f"supabase:{account['username']}" if accounts_configured else f"local:{account['id']}",
+        wellbeing_display_name=account["username"],
+        next_main_tab="ホーム",
+        user_role=account["role"], senior_age=account["age"],
+        senior_gender=account["gender"], senior_height=account["height"],
+        senior_weight=account["weight"], senior_disease=account["disease"],
+        family_authenticated=False, facility_authenticated=False, admin_authenticated=False,
+    )
+
 
 if "is_guest_mode" not in st.session_state:
-        st.session_state.is_guest_mode = False
-
-if "is_logged_in" not in st.session_state:
-    st.session_state.is_logged_in = False
-    
-# =============================================================================
-# 🍪 1. アプリ起動時の自動ログインチェック処理 (最優先)
-# =============================================================================
-if not st.session_state.is_logged_in and not st.session_state.get("is_guest_mode", False):
-    # クッキーから保存されたユーザー名を取得
-    saved_username = cookies.get("saved_username")
-    
-    if saved_username:
+    st.session_state.is_guest_mode = False
+if not st.session_state.is_logged_in and not st.session_state.get("show_login_form") and not st.session_state.get("skip_auto_login"):
+    token = cookies.get(signin_cookie) if cookies else None
+    if token:
         try:
-            supabase = get_supabase()
-            # パスワードハッシュはクッキーに保存せず、ユーザー名のみでDBを照会
-            # (セキュリティを高める場合は、クッキー専用のトークンを発行して管理するのが望ましい)
-            res = supabase.table("app_users").select("*").eq("username", saved_username).execute()
-            
-            if res.data and len(res.data) > 0:
-                user_info_db = res.data[0]
-                
-                # セッション情報をクッキーから復元（パスワード入力なしでログイン）
-                st.session_state.is_logged_in = True
-                st.session_state.is_auto_logged_in = True # 自動ログインフラグをON
-                st.session_state.senior_fullname = user_info_db["username"]
-                st.session_state.user_role = user_info_db.get("role", "一般")
-                st.session_state.senior_age = user_info_db.get("age", 0)
-                st.session_state.user_code = user_info_db.get("user_code", "")
-                st.session_state.user_id = user_info_db["username"]
-                
-                st.toast(f"🍪 お帰りなさい、{saved_username} 様！（自動ログイン）")
-                st.rerun()
-
-        except Exception as e:
-            # クッキーが改ざんされたり、ユーザーが削除された場合は無視して通常のログインへ
-            print(f"Auto-login failed: {e}")
+            name = signer.loads(token, max_age=30 * 24 * 3600)
+            account = get_supabase().table("app_users").select("*").eq("username", name).limit(1).execute()
+            if account.data:
+                restore_profile(account.data[0])
+        except (BadSignature, KeyError, ValueError):
             pass
+        except Exception:
+            st.warning("自動ログインできませんでした。ログイン画面からお試しください。")
+    if not st.session_state.is_logged_in:
+        st.session_state.is_guest_mode = True
 
 # -----------------------------------------------------------------------------
 # 🟢 未ログイン時の処理（ログイン／新規登録／お試し献立作成）
@@ -692,107 +665,94 @@ if not st.session_state.is_logged_in:
         col_left, col_center, col_right = st.columns([1, 2, 1])
 
         with col_center:
-            st.markdown("<h2 style='text-align: center;'>🍱 高齢者健康、交流アプリ</h2>", unsafe_allow_html=True)
-            st.markdown("<p style='text-align: center; color: #666;'>サービスを利用するにはログインが必要です。</p>", unsafe_allow_html=True)
+            apply_theme()
+            brand()
+            st.header("ログイン・会員登録")
+            if TRIAL_MODE:
+                st.caption("ニックネームで登録できます。このPCに試用中の記録を保存します。健康記録やプロフィールは架空の値でお試しください。")
+            elif not accounts_configured:
+                st.caption("このアプリを動かしているPCに記録を保存します。ニックネームをユーザーIDにできます。")
             
-            login_tab1, login_tab2 = st.tabs(["🔑 ログイン", "📝 新規会員登録"])
+            login_view = st.segmented_control("会員メニュー", ["ログイン", "新規会員登録"], default="ログイン", required=True)
             
             # --- 🔑 ログインフォーム ---
-            with login_tab1:
+            if login_view == "ログイン":
                 with st.form("main_login_form"):
-                    l_name = st.text_input("👤 お名前（ユーザーID）", "")
-                    l_pass = st.text_input("🔑 パスワード", type="password")
+                    l_name = st.text_input("ユーザーID", "", key="login_user")
+                    l_pass = st.text_input("パスワード", type="password", key="login_password")
 
                     # 🍪 追加: 自動ログインのチェックボックス
-                    remember_me = st.checkbox("🔑 次回から自動的にログインする", value=True)
+                    remember_me = st.checkbox("次回もログインを保持する", value=False) if cookies else False
 
-                    submit_login = st.form_submit_button("ログインして始める", use_container_width=True)
+                    submit_login = st.form_submit_button("ログインして始める", width="stretch")
                     if submit_login:
                         if not l_name.strip() or not l_pass.strip():
                             st.warning("お名前とパスワードを入力してください。")
                         else:
-                            user_info = authenticate_user_db(l_name, l_pass)
+                            user_info = authenticate_user_db(l_name.strip(), l_pass)
                             if user_info:
-                                st.session_state.is_logged_in = True
-                                st.session_state.is_guest_mode = False
-                                st.session_state.senior_fullname = user_info[0]
-                                st.session_state.user_role = user_info[1]
-                                st.session_state.senior_age = user_info[2]
-                                st.session_state.senior_gender = user_info[3]
-                                st.session_state.senior_height = user_info[4]
-                                st.session_state.senior_weight = user_info[5]
-                                st.session_state.senior_disease = user_info[6]
-                                st.session_state.user_code = user_info[7]
-                                st.session_state.user_id = user_info[0]
-
-                                if remember_me:
-                                    cookies["saved_username"] = l_name.strip()
-                                    cookies.save()
-                                else:
-                                    if "saved_username" in cookies:
-                                        del cookies["saved_username"]
-                                        cookies.save()
-
-                                try:
-                                    h_recs = get_health_records(user_info[0])
-                                    if h_recs and len(h_recs) > 0 and str(h_recs[0][0]) == today_str:
-                                        st.session_state.water_today = int(h_recs[0][4]) if len(h_recs[0]) > 4 and h_recs[0][4] is not None else 0
-                                    else:
-                                        st.session_state.water_today = 0
-                                except Exception:
-                                    pass
+                                restore_profile(user_info)
+                                if cookies:
+                                    if remember_me:
+                                        cookies[signin_cookie] = signer.dumps(user_info["username"])
+                                    elif signin_cookie in cookies:
+                                        del cookies[signin_cookie]
                                 st.success(f"🎉 ようこそ {l_name} 様！")
                                 st.rerun()
                             else:
                                 st.error("❌ お名前またはパスワードが正しくありません。")
 
             # --- 📝 新規登録フォーム ---
-            with login_tab2:
+            if login_view == "新規会員登録":
                 with st.form("main_register_form"):
-                    r_name = st.text_input("👤 お名前（フルネーム、空白なし）", "")
-                    r_pass = st.text_input("🔑 パスワードを設定", type="password")
-                    r_role = st.selectbox("立場（役割）", ["👴 高齢者（本人）", "🎓 学生・若者モード", "👨‍👩‍👧 家族アカウント", "🏥 施設職員モード"])
-                    r_age = st.number_input("年齢", min_value=18, max_value=120, value=75)
-                    r_gender = st.radio("性別", ["女性", "男性", "未回答"], horizontal=True)
-                    r_height = st.number_input("身長 (cm)", value=155.0, step=0.5)
-                    r_weight = st.number_input("体重 (kg)", value=50.0, step=0.5)
-                    r_disease = st.selectbox("配慮すべき持病", ["高血圧", "糖尿病", "腎臓病", "脂質異常症", "骨粗しょう症", "認知症予防", "フレイル予防", "なし"])
+                    r_name = st.text_input("ユーザーID", "", max_chars=48, key="register_user")
+                    r_pass = st.text_input("パスワードを設定", type="password", max_chars=128, key="register_password",
+                                           help="このPCで作るアカウントは10文字以上です。")
+                    roles = ["一般（本人）", "👴 高齢者（本人）", "🎓 学生・若者モード", "👨‍👩‍👧 家族アカウント"]
+                    if ROLE_CODES["🏥 施設職員モード"]:
+                        roles.append("🏥 施設職員モード")
+                    r_role = st.selectbox("立場（役割）", roles)
+                    facility_code = st.text_input("施設職員用のアクセスコード", type="password") if "施設" in r_role else ""
+                    with st.expander("プロフィール献立の条件（任意）"):
+                        r_age = st.number_input("年齢", min_value=18, max_value=120, value=50)
+                        r_gender = st.radio("性別", ["未回答", "女性", "男性"], horizontal=True)
+                        r_height = st.number_input("身長 (cm)", min_value=1.0, value=155.0, step=0.5)
+                        r_weight = st.number_input("体重 (kg)", min_value=1.0, value=50.0, step=0.5)
+                        r_disease = st.selectbox("配慮すべき持病", ["なし", "高血圧", "糖尿病", "腎臓病", "脂質異常症", "骨粗しょう症", "認知症予防", "フレイル予防"])
                 
-                    submit_reg = st.form_submit_button("✨ アカウントを作成", use_container_width=True)
+                    submit_reg = st.form_submit_button("✨ アカウントを作成", width="stretch")
                     if submit_reg:
                         if not r_name.strip() or not r_pass.strip():
                             st.warning("お名前とパスワードを入力してください。")
+                        elif "施設" in r_role and (
+                            not ROLE_CODES["🏥 施設職員モード"] or
+                            not secrets.compare_digest(facility_code.encode(), ROLE_CODES["🏥 施設職員モード"].encode())
+                        ):
+                            st.warning("施設職員の登録には施設から案内されたアクセスコードを入力してください。")
                         else:
-                            ok, res = register_user_db(r_name, r_pass, r_role, int(r_age), r_gender, float(r_height), float(r_weight), r_disease)
+                            ok, res = register_user_db(r_name.strip(), r_pass, r_role, int(r_age), r_gender, float(r_height), float(r_weight), r_disease)
                             if ok:
-                                st.success(f"🎉 アカウントを作成しました！「🔑 ログイン」タブからログインしてください。（連携コード: `{res}`）")
+                                if not accounts_configured:
+                                    restore_profile(wellbeing.authenticate_local(r_name.strip(), r_pass))
+                                    st.rerun()
+                                st.success("アカウントを作成しました。ログインに進んでください。")
                             else:
                                 st.error(f"登録エラー: {res}")
 
-            st.markdown("---")
-            # 🍽️ 未ログインのまま献立作成へアクセスするボタン
-            if st.button("👨‍🍳 ログインせずに献立だけ作成してみる（お試し）", use_container_width=True):
+            if st.button("登録なしで献立・生活相談を使う", type="primary"):
                 st.session_state.is_guest_mode = True
+                st.session_state.show_login_form = False
+                st.session_state.skip_auto_login = True
                 st.rerun()
 
-        # ログインもゲスト選択もしていない場合はここで画面を停止
         st.stop()
-
-    # ゲスト（お試し）モードの場合の画面表示制御
-    else:
-        st.info("💡 現在「お試し（献立作成のみ）」モードで利用中です。健康記録や交流機能を利用するにはログインしてください。")
-        if st.sidebar.button("🔑 ログイン画面へ戻る", use_container_width=True):
-            st.session_state.is_guest_mode = False
-            st.rerun()
-            
-        # サイドバーのナビゲーションメニューやお試し用のダミー初期値を設定するコードへ続きます...
 
 # 🟢 現在のユーザーIDを一元設定（重複変数を整理）
 user_id = st.session_state.user_id
 
 def add_stamp(action_name):
     """スタンプを付与する関数"""
-    conn = sqlite3.connect('app_data.db')
+    conn = sqlite3.connect(ACTIVITY_DB)
     c = conn.cursor()
     try:
         c.execute("INSERT INTO daily_stamps VALUES (?, ?, ?)", (user_id, today_str, action_name))
@@ -879,9 +839,6 @@ today_quiz = random.choice(QUIZ_DATABASE)
 if "event_update" not in st.session_state:
     st.session_state.event_update = False
 
-if not st.session_state.user_code or len(str(st.session_state.user_code)) < 4:
-    st.session_state.user_code = secrets.token_hex(3).upper()
-
 # ========= session_state の初期設定 =========
 if "fav_daily_menus" not in st.session_state:
     st.session_state.fav_daily_menus = []
@@ -892,98 +849,39 @@ if "weekly_menu" not in st.session_state:
 if "recommended_menu" not in st.session_state:
     st.session_state.recommended_menu = None
 
-try:
-    db_user = get_user(st.session_state.senior_fullname)
-    if not db_user:
-        res_code = add_or_update_user(
-            st.session_state.senior_fullname,
-            st.session_state.user_role,
-            int(st.session_state.senior_age),
-            st.session_state.senior_gender,
-            float(st.session_state.senior_height),
-            float(st.session_state.senior_weight),
-            "普通",
-            st.session_state.senior_disease,
-            "👴 高齢者モード"
-        )
-        if res_code and len(str(res_code)) >= 4: 
-            st.session_state.user_code = str(res_code)
-    else:
-        if isinstance(db_user, dict):
-            c_val = db_user.get("user_code")
-            if c_val and len(str(c_val)) >= 4:
-                st.session_state.user_code = str(c_val)
-            if "point" in db_user and db_user["point"] is not None:
-                st.session_state.genki_point = db_user["point"]
-        elif isinstance(db_user, tuple):
-            if len(db_user) > 8 and db_user[8] is not None:
-                st.session_state.genki_point = db_user[8]
-except Exception:
-    pass
-
-if not st.session_state.linked_senior_code or len(str(st.session_state.linked_senior_code)) < 4:
-    st.session_state.linked_senior_code = st.session_state.user_code
-
-today_task = get_daily_task(st.session_state.senior_fullname, today_str)
-db_morning = bool(today_task.get("walk", 0)) if (today_task and isinstance(today_task, dict)) else False
-db_goal = bool(today_task.get("exercise", 0)) if (today_task and isinstance(today_task, dict)) else False
-
-if "morning_checked" not in st.session_state:
-    st.session_state.morning_checked = db_morning
-if "goal_done" not in st.session_state:
-    st.session_state.goal_done = db_goal
-
-try:
-    h_records = get_health_records(st.session_state.senior_fullname)
-    if h_records and len(h_records) > 0:
-        latest_h = h_records[0]
-        if latest_h[0] == today_str and len(latest_h) > 4 and latest_h[4] is not None:
-            st.session_state.water_today = int(latest_h[4])
-except Exception:
-    pass
-
-# ========= 水分追記ユーティリティ =========
-def add_water_amount(amount: int):
-    st.session_state.water_today += amount
+if st.session_state.is_logged_in:
     try:
-        add_health_record(
-            st.session_state.senior_fullname,
-            today_str,
-            float(st.session_state.senior_weight),
-            120,
-            80,
-            int(st.session_state.water_today),
-            1,
-            85
-        )
-        update_point(st.session_state.senior_fullname, 2)
-        st.session_state.genki_point += 2
-    except Exception:
+        db_user = get_user(st.session_state.senior_fullname)
+        if not db_user:
+            add_or_update_user(
+                st.session_state.senior_fullname,
+                st.session_state.user_role,
+                int(st.session_state.senior_age),
+                st.session_state.senior_gender,
+                float(st.session_state.senior_height),
+                float(st.session_state.senior_weight),
+                "普通",
+                st.session_state.senior_disease,
+                "👴 高齢者モード"
+            )
+        elif len(db_user) > 8 and isinstance(db_user[8], int):
+            st.session_state.genki_point = db_user[8]
+    except sqlite3.Error:
         pass
 
-def save_final_water(final_amount: int):
-    st.session_state.water_today = final_amount
-    try:
-        add_health_record(
-            st.session_state.senior_fullname,
-            today_str,
-            float(st.session_state.senior_weight),
-            120,
-            80,
-            int(final_amount),
-            1,
-            90
-        )
-        st.success(f"本日({today_str})の最終水分量を【{final_amount} ml】として確定保存しました！")
-    except Exception as e:
-        st.error(f"保存エラー: {e}")
+    today_task = get_daily_task(st.session_state.senior_fullname, today_str)
+    db_morning = bool(today_task.get("walk", 0)) if (today_task and isinstance(today_task, dict)) else False
+    db_goal = bool(today_task.get("exercise", 0)) if (today_task and isinstance(today_task, dict)) else False
 
+    if "morning_checked" not in st.session_state:
+        st.session_state.morning_checked = db_morning
+    if "goal_done" not in st.session_state:
+        st.session_state.goal_done = db_goal
 
 username = st.session_state.senior_fullname
-user_code = st.session_state.user_code
 
 # ========= サイドバー（ログイン切替 ＆ 見守りナビ） =========
-st.sidebar.title("🍱 見守りナビ")
+st.sidebar.title("暮らしの食卓")
 st.sidebar.divider()
 
 # --- ログイン状態に応じたサイドバー表示 ---
@@ -992,17 +890,18 @@ if st.session_state.get("is_logged_in", False):
     st.sidebar.info(f"👤 **{st.session_state.senior_fullname}** 様")
 
     # アカウント切り替え（ログアウト）ボタン
-    if st.sidebar.button("🚪 アカウントを切り替える（ログアウト）", use_container_width=True):
-        if "saved_username" in cookies:
-            del cookies["saved_username"]
-            cookies.save() # 保存を確定
-        st.session_state.is_logged_in = False
-        st.session_state.user_id = None
-        st.session_state.user_role = "👴 高齢者（本人）"
-        st.session_state.current_page = "login"
+    if st.sidebar.button("🚪 アカウントを切り替える（ログアウト）", width="stretch"):
+        if cookies and signin_cookie in cookies:
+            del cookies[signin_cookie]
+        trial_admission = st.session_state.get("trial_admission")
+        st.session_state.clear()
+        if trial_admission:
+            st.session_state.trial_admission = trial_admission
+        st.session_state.show_login_form = True
         st.rerun()
 else:
-    st.sidebar.warning("🔒 未ログイン状態です")
+    if st.sidebar.button("ログイン・会員登録", width="stretch"):
+        open_login()
 
 st.sidebar.divider()
 
@@ -1020,7 +919,6 @@ st.session_state.display_mode = st.sidebar.radio(
 
 # 変数の再更新（現在ログイン中のユーザー情報に基づいて動的計算）
 username = st.session_state.senior_fullname
-user_code = st.session_state.user_code
 
 need_calorie = calculate_calories(
     int(st.session_state.senior_age),
@@ -1031,13 +929,12 @@ need_calorie = calculate_calories(
 )
 bmi, bmi_result = calculate_bmi(float(st.session_state.senior_height), float(st.session_state.senior_weight))
 
-st.sidebar.info(
-    f"👤 **ご利用者**: {username} 様\n"
-    f"🎂 **年齢/持病**: {st.session_state.senior_age}歳 / {st.session_state.senior_disease}\n"
-    f"🔥 **目標カロリー**: 約 {need_calorie} kcal\n"
-    f"🔑 **家族連携コード**: `{user_code}`"
-)
-st.sidebar.write("※ 氏名・持病変更やモード切り替えは『⚙️ 設定』ページで行えます。")
+if st.session_state.is_logged_in:
+    st.sidebar.info(
+        f"ご利用者　{username} 様\n\n"
+        f"年齢・持病　{st.session_state.senior_age}歳 / {st.session_state.senior_disease}\n\n"
+        f"目安カロリー　約 {need_calorie} kcal"
+    )
 
 # ========= 🎨 CSSスタイル設定 =========
 if dark_mode:
@@ -1425,18 +1322,18 @@ st.markdown(f"""
 # チュートリアル
 # ==========================
 if not st.session_state.tutorial_finished:
-    st.markdown("# 🍱 高齢者健康・交流アプリ へようこそ！")
+    st.markdown("# 暮らしの食卓へようこそ")
     page = st.session_state.tutorial_page
 
     if page == 1:
         st.info("### 🍚 1. ボタンを押すだけで健康献立を自動作成")
-        st.write("持病や年齢に合わせた健康的な献立をAIが自動作成します。")
+        st.write("食材から夕食を探したり、登録プロフィールに応じた献立例を見たりできます。")
         display_safe_image("assets/tutorial1.jpg", caption="操作はとても簡単です", fallback_emoji="🍱")
         if st.button("▶ 次へ（健康・生活チェック）"): st.session_state.tutorial_page = 2
 
     elif page == 2:
         st.info("### ❤️ 2. 今日の運動・水分・会話をワンタップ記録")
-        st.write("歩数や水分チェックで「🌸元気ポイント」が溜まります。")
+        st.write("歩数や水分チェックで「🌸活動ポイント」が溜まります。")
         display_safe_image("assets/tutorial2.jpg", caption="毎日の目標を達成しましょう", fallback_emoji="🌱")
         col1, col2 = st.columns(2)
         with col1:
@@ -1455,8 +1352,8 @@ if not st.session_state.tutorial_finished:
     st.stop()
 
 # ========= ヘッダー =========
-st.markdown('<p class="main-title">🍱 高齢者健康・交流アプリ</p>', unsafe_allow_html=True)
-st.markdown(f'<p class="sub-title">{greeting()}、{username} さん。</p>', unsafe_allow_html=True)
+apply_theme(dark_mode)
+brand()
 
 # -------------------------------------------------------------------
 # 🏥 施設職員モード専用便利ツール（所属施設と連動した閲覧・変更機能）
@@ -1478,14 +1375,9 @@ if st.session_state.user_role and "施設" in st.session_state.user_role:
         if seniors_list:
             s_names = [s[1] if isinstance(s, tuple) else s.get("name") for s in seniors_list]
             selected_senior = st.selectbox("👤 入所者様を選択して健康・献立データを参照", s_names, index=s_names.index(st.session_state.senior_fullname) if st.session_state.senior_fullname in s_names else 0)
-            if selected_senior != st.session_state.senior_fullname:
-                st.session_state.senior_fullname = selected_senior
-                st.session_state.linked_senior_name = selected_senior
-                st.rerun()
-            
             # 施設職員向け：選択された入所者のリアルタイム健康・献立データの表示
-            st.markdown(f"#### 📊 {st.session_state.senior_fullname} 様の最新ステータス")
-            s_records = get_health_records(st.session_state.senior_fullname)
+            st.markdown(f"#### 📊 {selected_senior} 様の最新ステータス")
+            s_records = get_health_records(selected_senior)
             
             c_h1, c_h2, c_h3 = st.columns(3)
             if s_records and len(s_records) > 0:
@@ -1494,405 +1386,298 @@ if st.session_state.user_role and "施設" in st.session_state.user_role:
                 c_h2.metric("⚖️ 体重", f"{latest[1] if len(latest)>1 else '--'} kg")
                 c_h3.metric("🩺 血圧(収縮/拡張)", f"{latest[2] if len(latest)>2 else '--'} / {latest[3] if len(latest)>3 else '--'} mmHg")
             else:
-                c_h1.metric("💧 本日の水分摂取量", f"{st.session_state.water_today} ml")
-                c_h2.metric("⚖️ 体重", f"{st.session_state.senior_weight} kg")
-                c_h3.metric("🩺 血圧", "120 / 80 mmHg")
-
-            # 献立データの連携表示
-            rec_menu = st.session_state.get("recommended_menu")
-            if rec_menu and isinstance(rec_menu, dict):
-                st.info(f"🍱 **本日の登録献立**: 朝: {rec_menu.get('朝食','--')} | 昼: {rec_menu.get('昼食','--')} | 夕: {rec_menu.get('夕食','--')}")
-            else:
-                st.caption("※ 本日の献立データはまだ生成されていません。")
+                st.caption("表示できる記録がありません。")
     except Exception as e:
         st.error(f"施設データ読み込みエラー: {e}")
 
-st.write("---")
-
 # -------------------------------------------------------------------
-# 🎨 5大色分けナビゲーション（HTML直接描画で完全色分け解決）
-# -------------------------------------------------------------------
-st.write("---")
+MAIN_PAGES = {
+    "ホーム": "🏠 ホーム",
+    "献立": "🍱 献立作成",
+    "健康記録": "🩺 健康記録",
+    "交流・思い出": "👥 交流・思い出",
+    "設定": "⚙️ 設定",
+}
+next_tab = st.session_state.pop("next_main_tab", None)
+if next_tab in MAIN_PAGES:
+    st.session_state.main_tab = next_tab
+main_tabs = st.tabs(list(MAIN_PAGES), key="main_tab", on_change="rerun")
+current_tab = st.session_state.main_tab or "ホーム"
+page = MAIN_PAGES[current_tab]
+st.session_state.current_page = page
+active_tab = main_tabs[list(MAIN_PAGES).index(current_tab)]
 
-# 5大ボタンの設定リスト (表示名, 背景色, クリック時に設定するページ名)
-nav_config = [
-    ("🏠 ホーム", "#8BC34A", "🏠 ホーム"),         # 黄緑
-    ("🍱 献立作成", "#E53935", "🍱 献立作成"),     # 赤
-    ("🩺 健康記録", "#03A9F4", "🩺 健康記録"),     # 水色
-    ("👥 交流・思い出", "#AB47BC", "👥 交流・思い出"), # 薄紫
-    ("⚙️ 設定", "#78909C", "⚙️ 設定")              # 薄灰色
-]
-
-cols = st.columns(5)
-
-for idx, (label, color_code, target_page) in enumerate(nav_config):
-    with cols[idx]:
-        # 各ボタンの色とデザインを個別に固定したHTMLコンポーネントを出力
-        button_html = f"""
-        <div style="width: 100%; text-align: center;">
-            <button onclick="parent.postMessage({{type: 'streamlit:setComponentValue', value: '{target_page}'}}, '*');" 
-                    style="
-                        width: 100%;
-                        height: 60px;
-                        background-color: {color_code} !important;
-                        color: #FFFFFF !important;
-                        font-size: 18px;
-                        font-weight: bold;
-                        border: none;
-                        border-radius: 12px;
-                        cursor: pointer;
-                        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                        transition: all 0.2s ease;
-                    "
-                    onmouseover="this.style.opacity='0.85'"
-                    onmouseout="this.style.opacity='1.0'">
-                {label}
-            </button>
-        </div>
-        """
-        # クリックを判定するためのダミーキー付きボタン
-        if st.button(label, key=f"nav_native_btn_{idx}", use_container_width=True):
-            st.session_state.current_page = target_page
-            st.rerun()
-
-# 5大ボタンの表示スタイルを上書き修正する補正CSS
-st.markdown("""
-<style>
-    /* ナビゲーション列内の標準ボタンを背景色付きにする強力補正 */
-    div[data-testid="stColumn"]:nth-of-type(1) div[data-testid="stButton"] > button { background-color: #8BC34A !important; background: #8BC34A !important; color: #FFFFFF !important; }
-    div[data-testid="stColumn"]:nth-of-type(2) div[data-testid="stButton"] > button { background-color: #E53935 !important; background: #E53935 !important; color: #FFFFFF !important; }
-    div[data-testid="stColumn"]:nth-of-type(3) div[data-testid="stButton"] > button { background-color: #03A9F4 !important; background: #03A9F4 !important; color: #FFFFFF !important; }
-    div[data-testid="stColumn"]:nth-of-type(4) div[data-testid="stButton"] > button { background-color: #AB47BC !important; background: #AB47BC !important; color: #FFFFFF !important; }
-    div[data-testid="stColumn"]:nth-of-type(5) div[data-testid="stButton"] > button { background-color: #78909C !important; background: #78909C !important; color: #FFFFFF !important; }
-
-    div[data-testid="stColumn"] div[data-testid="stButton"] > button {
-        height: 60px !important;
-        font-size: 20px !important;
-        font-weight: bold !important;
-        border-radius: 12px !important;
-        border: none !important;
-    }
-    div[data-testid="stColumn"] div[data-testid="stButton"] > button * {
-        color: #FFFFFF !important;
-        -webkit-text-fill-color: #FFFFFF !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-st.write("---")
-page = st.session_state.current_page
-selected_menu = page  
-
-# =========================================================================
-# 🔻【ここへ追加】 ゲストモードおよび未ログイン時のアクセス制限処理
-# =========================================================================
-# 1. 未ログイン（ログインもゲスト選択もしていない）場合
-if not st.session_state.get("is_logged_in", False) and not st.session_state.get("is_guest_mode", False):
-    st.warning("⚠️ サービスを利用するにはログインが必要です。")
-    st.stop()
-
-# 2. ゲスト（お試し）モード時に制限対象機能を開こうとした場合
-if st.session_state.get("is_guest_mode", False) and not st.session_state.get("is_logged_in", False):
-    # 献立作成以外のメニューを選択した場合にブロック
-    # 💡 画面上の表記と一致させるため "🍱 献立作成" または "🍳 献立作成" の判定条件を調整
-    if selected_menu not in ["🍱 献立作成", "🍳 献立作成"]:
-        st.warning("🔒 「健康記録」や「コミュニティ」の閲覧・利用にはログインが必要です。")
-        st.info("トップページまたはサイドバーの「ログイン」ボタンからログインしてください。")
-        
-        # ログイン画面に戻るボタン
-        if st.button("🔑 ログイン画面へ戻る"):
-            st.session_state.is_guest_mode = False
-            st.rerun()
-            
-        # 以降の処理をストップして制限対象機能のコードを実行させない
+with active_tab:
+    if not st.session_state.is_logged_in and current_tab in {"健康記録", "交流・思い出", "設定"}:
+        st.header(current_tab)
+        st.info("この機能はログイン後に使えます。")
+        if st.button("ログイン・会員登録", key="locked_page_login", type="primary"):
+            open_login()
         st.stop()
 
-# =================================----------------------------------
-# ページ 1: 🏠 ホーム
-# =================================----------------------------------
-if page == "🏠 ホーム":
-    
-    # ---------------------------------------------------------------
-    # 1. 家族モード
-    # ---------------------------------------------------------------
-    if "家族" in st.session_state.user_role:
-        st.markdown(f"## 👨‍👩‍👧 家族見守りサマリー（対象: {st.session_state.get('linked_senior_name', 'ご家族')} 様）")
-        st.success(f"🟢 **【認証接続完了】** 連携コード: `{st.session_state.get('linked_senior_code', '')}` | {st.session_state.get('facility_name', '施設')}")
-        
-        st.subheader("📊 本日のバイタル & 活動状態")
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("🚶 今日の歩数", f"{st.session_state.get('walk_steps', 0)} 歩", "目標 3000歩")
-        m2.metric("💧 水分補給", f"{st.session_state.get('water_today', 0)} ml", "順調")
-        
-        # BMI計算の安全処理
-        s_weight = st.session_state.get('senior_weight', 50.0)
-        bmi_val = bmi if 'bmi' in locals() else 21.5
-        m3.metric("秤 体重 / BMI", f"{s_weight} kg", f"BMI {bmi_val:.1f}")
-        m4.metric("🌸 元気ポイント", f"{st.session_state.get('genki_point', 0)} pt", f"{st.session_state.get('continue_days', 1)}日連続")
-        m5.metric("😊 ご気分", "お元気", "問題なし")
-
+    # =================================----------------------------------
+    # ページ 1: 🏠 ホーム
+    # =================================----------------------------------
+    if page == "🏠 ホーム":
+        if st.session_state.is_logged_in:
+            render_today(open_login)
+            with st.container(horizontal=True):
+                if st.button("見守りの共有を設定する", key="home_watch_settings"):
+                    st.session_state.next_main_tab = "設定"
+                    st.rerun()
+                if st.button("共有された記録を見る", key="home_watch_records"):
+                    st.session_state.next_main_tab = "交流・思い出"
+                    st.rerun()
+            render_messages()
+            home_banner()
+        else:
+            home_banner()
+            render_today(open_login)
+        render_consultation()
+        if not st.session_state.is_logged_in:
+            st.divider()
+            st.write("健康記録や交流機能は会員として利用できます。")
+            if st.button("ログイン・会員登録", key="home_login"):
+                open_login()
+            st.stop()
         st.divider()
-        st.subheader("🏥 施設からの最新の連絡・申送り")
-        try:
-            f_logs = get_family_logs(st.session_state.linked_senior_name)
-            if f_logs:
-                for log in f_logs[:2]:
-                    st.info(f"📅 **[{log.get('created_at', today_str)}] 投稿者: {log.get('sender', '施設職員')}**\n\n📌 **内容**: {log.get('content')}")
-            else:
-                st.info("📅 **[本日のご様子]**\n\n🍚 食事: **完食** | 💧 水分: **1200ml** | 🚶 活動: **午前中お散歩**\n\n💬 **スタッフより**: 昔の旅行のお話を嬉しそうに語られていました。")
-        except Exception: 
-            pass
 
-    # ---------------------------------------------------------------
-    # 2. 施設モード
-    # ---------------------------------------------------------------
-    elif "施設" in st.session_state.user_role:
-        st.markdown(f"## 🏥 {st.session_state.get('facility_name', '施設')} 施設全体アナウンス & ポータル")
+        # ---------------------------------------------------------------
+        # 1. 家族モード
+        # ---------------------------------------------------------------
+        if "家族" in st.session_state.user_role:
+            render_shared()
+
+        # ---------------------------------------------------------------
+        # 2. 施設モード
+        # ---------------------------------------------------------------
+        elif "施設" in st.session_state.user_role:
+            st.markdown(f"## 🏥 {st.session_state.get('facility_name', '施設')} 施設全体アナウンス & ポータル")
         
-        st.subheader("📢 施設全体掲示板（入所者様・ご家族へ共有中）")
-        with st.form("add_announcement_form"):
-            new_ann = st.text_input("新規お知らせ・連絡内容を入力", "📢 明日の午後はボランティアによる歌謡イベントを開催します。")
-            if st.form_submit_button("📌 掲示板へ発信"):
-                if "facility_announcements" not in st.session_state:
-                    st.session_state.facility_announcements = []
-                st.session_state.facility_announcements.insert(0, new_ann)
-                st.success("掲示板を更新しました！")
+            st.subheader("📢 施設全体掲示板（入所者様・ご家族へ共有中）")
+            with st.form("add_announcement_form"):
+                new_ann = st.text_input("新規お知らせ・連絡内容を入力", "📢 明日の午後はボランティアによる歌謡イベントを開催します。")
+                if st.form_submit_button("📌 掲示板へ発信"):
+                    if "facility_announcements" not in st.session_state:
+                        st.session_state.facility_announcements = []
+                    st.session_state.facility_announcements.insert(0, new_ann)
+                    st.success("掲示板を更新しました！")
         
-        for ann in st.session_state.get('facility_announcements', []):
-            st.info(ann)
+            for ann in st.session_state.get('facility_announcements', []):
+                st.info(ann)
 
-    # ---------------------------------------------------------------
-    # 3. 高齢者本人モード（シンプル＆デイリーダッシュボード化）
-    # ---------------------------------------------------------------
-    else:
-        u_code = user_code if 'user_code' in locals() else st.session_state.get('linked_senior_code', '---')
-        st.markdown(f"""
-        <div class="status-badge" style="background-color: #f0f2f6; padding: 10px; border-radius: 10px; margin-bottom: 15px;">
-            👤 <b>ご利用者</b>: {st.session_state.get('senior_fullname', 'ご利用者')} 様（{st.session_state.get('senior_age', 75)}歳） &nbsp;|&nbsp; 🏥 <b>所属</b>: {st.session_state.get('facility_name', '一般')} &nbsp;|&nbsp; 🔗 <b>ご家族連携コード</b>: <code>{u_code}</code>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # 🔊 音声ガイドボタン
-        if st.button("🔊 画面の説明を声で聴く", use_container_width=True):
-            trigger_action(sound=False, speak_text="こんにちは。今日の健康スタンプを集めたり、脳トレクイズに挑戦してみましょう。")
-
-        st.markdown("---")
-
-        # 【メイン1】今日やること＆ワンタップ元気ボタン
-        st.subheader("☀️ 今日やること")
-        col_a, col_b = st.columns(2)
-
-        with col_a:
-            st.write("**1. あいさつ・元気報告**")
-            conn = sqlite3.connect('app_data.db')
-            c = conn.cursor()
-            c.execute("SELECT timestamp FROM genki_status WHERE user_id=? AND date=?", (user_id, today_str))
-            already_genki = c.fetchone()
-            conn.close()
-
-            if already_genki:
-                st.success(f"✅ 「元気だよ」送信済み（{already_genki[0]}）")
-                # 🗑️ 誤操作取消しボタン
-                if st.button("↩️ 報告を取り消す", key="cancel_genki_btn"):
-                    conn = sqlite3.connect('app_data.db')
-                    c = conn.cursor()
-                    c.execute("DELETE FROM genki_status WHERE user_id=? AND date=?", (user_id, today_str))
-                    c.execute("DELETE FROM daily_stamps WHERE user_id=? AND date=? AND action_type=?", (user_id, today_str, "今日元気？報告"))
-                    conn.commit()
-                    conn.close()
-                    st.toast("元気報告を取り消しました。")
-                    st.rerun()
-            else:
-                if st.button("🌸 今日も元気だよ！", use_container_width=True, type="primary"):
-                    now_time = datetime.datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%H:%M")
-                    conn = sqlite3.connect('app_data.db')
-                    c = conn.cursor()
-                    c.execute("INSERT OR REPLACE INTO genki_status VALUES (?, ?, ?)", (user_id, today_str, now_time))
-                    conn.commit()
-                    conn.close()
-                    
-                    add_stamp("今日元気？報告")
-                    trigger_action(sound=True, speak_text="元気な報告ありがとうございます！")
-                    st.rerun()
-
-        with col_b:
-            st.write("**2. 本日の献立チェック**")
-            
-            # session_stateから提案済み献立（recommended_menu）を取得
-            rec_menu = st.session_state.get("recommended_menu", None)
-            
-            # 1. 献立がすでに作成されている場合
-            if rec_menu and isinstance(rec_menu, dict):
-                # 朝・昼・夕の献立テキストを取得（キーがない場合の初期値も設定）
-                bf_title = rec_menu.get("朝食", "朝食メニュー")
-                ln_title = rec_menu.get("昼食", "昼食メニュー")
-                dn_title = rec_menu.get("夕食", "夕食メニュー")
-                
-                # 今日の夕食メインを中心に要約表示（全体をわかりやすく表示）
-                st.info(f"🍲 **本日の献立**\n\n・🌅 **朝**: {bf_title}\n・🌞 **昼**: {ln_title}\n・🌙 **夕**: {dn_title}")
-                
-                if st.button("🍽️ 献立を確認した！", use_container_width=True, type="primary"):
-                    add_stamp("献立チェック")
-                    trigger_action(sound=True, speak_text="今日の献立を確認しましたね！美味しそうですね。")
-                    st.rerun()
-            
-            # 2. まだ献立が作成されていない場合
-            else:
-                st.warning("⚠️ まだ今日の献立がつくられていません。")
-                st.caption("「🍱 献立作成」ボタンからAIに本日の献立を作成してもらいましょう！")
-                
-                # 献立作成画面へ直接移動するボタン（利便性向上）
-                if st.button("🍱 献立作成画面へ移動する", use_container_width=True):
-                    st.session_state.current_page = "🍱 献立作成"
-                    st.rerun()
-
-        # 【メイン2】「できた！」を可視化するスタンプカード
-        st.subheader("💮 今日の健康スタンプカード")
-        conn = sqlite3.connect('app_data.db')
-        c = conn.cursor()
-        c.execute("SELECT action_type FROM daily_stamps WHERE user_id=? AND date=?", (user_id, today_str))
-        stamps = [row[0] for row in c.fetchall()]
-        conn.close()
-
-        stamp_cols = st.columns(3)
-        actions = ["今日元気？報告", "献立チェック", "脳トレ完了"]
-
-        for idx, act in enumerate(actions):
-            with stamp_cols[idx]:
-                if act in stamps:
-                    st.metric(label=act, value="済 💮")
-                else:
-                    st.metric(label=act, value="未完了")
-
-        st.markdown("---")
-
-        # 【メイン3】日替わり脳トレ＆健康雑学
-        st.subheader("🧠 本日の脳トレ（日替わり）")
-        st.write(f"**Q. {today_quiz['q']}**")
-
-        user_ans = st.radio("答えを選んでください：", today_quiz["options"], key="quiz_ans")
-
-        if st.button("答え合わせする", use_container_width=True):
-            if user_ans == today_quiz["ans"]:
-                st.balloons()
-                st.success(f"🎉 大正解！ {today_quiz['fact']}")
-                add_stamp("脳トレ完了")
-                trigger_action(sound=True, speak_text="大正解です！大変素晴らしいです！")
-            else:
-                st.warning("惜しい！もう一度考えてみましょう。")
-                trigger_action(sound=True, speak_text="もう一度選んでみてください。")
-
-        st.markdown("---")
-
-        # 【メイン4】地域イベント＆ニュース＆ポイントカード
-        col_main_left, col_main_right = st.columns(2)
-
-        with col_main_left:
-            # --- 1. 地域イベント表示エリア ---
-            c_ev_title, c_ev_btn = st.columns([3, 1])
-            with c_ev_title: 
-                st.subheader("🎪 近隣の地域イベント・健康講座")
-            with c_ev_btn:
-                if st.button("🔄 更新", key="btn_refresh_ev"):
-                    with st.spinner("最新イベントを更新中..."):
-                        try:
-                            refresh_events()
-                            st.success("最新化完了！")
-                        except Exception as e: 
-                            st.error(f"エラー: {e}")
-
-            raw_events = get_home_events(st.session_state) if 'get_home_events' in globals() else []
-            events_list = raw_events if isinstance(raw_events, list) else ([raw_events] if isinstance(raw_events, dict) else [])
-
-            if events_list:
-                for e in events_list[:4]:
-                    if isinstance(e, dict):
-                        # URLが存在する場合のリンク作成処理
-                        url_str = e.get('url', '')
-                        link_markdown = f"\n\n🔗 [👉 詳細ページを見る（外部サイト）]({url_str})" if url_str else ""
-                        
-                        st.info(
-                            f"📢 **{e.get('title', '公民館 講座')}**\n\n"
-                            f"📍 {e.get('place', '西東京市')} | 📅 {e.get('datetime', e.get('date', '近日開催'))}"
-                            f"{link_markdown}"
-                        )
-            else:
-                st.info("📅 **公民館 健康いきいき体操講座** (10:00〜 総合福祉センター)\n\n🔗 [👉 詳細ページを見る](https://www.city.nishitokyo.lg.jp/event/)")
-                st.info("🎨 **シニア昭和写真展・談話会** (13:30〜 地域公民館)\n\n🔗 [👉 詳細ページを見る](https://www.city.nishitokyo.lg.jp/event/)")
-
-            # --- 2. 地域ニュース表示エリア（号外NET連携） ---
-            c_nw_title, c_nw_btn = st.columns([3, 1])
-            with c_nw_title: 
-                st.subheader("📰 おうちで読む地域ニュース（号外NET）")
-            with c_nw_btn:
-                if st.button("📰 更新", key="btn_refresh_news"):
-                    with st.spinner("最新ニュースを取得中..."):
-                        try:
-                            # キャッシュをクリアして即時取得
-                            get_local_news.clear()
-                            st.success("更新完了！")
-                        except Exception as e: 
-                            st.error(f"エラー: {e}")
-
-            try:
-                news_items = get_local_news() if 'get_local_news' in globals() else []
-                if news_items and isinstance(news_items, list):
-                    for n in news_items[:4]:
-                        if isinstance(n, dict):
-                            n_title = n.get('title', '地域ニュース')
-                            n_place = n.get('place', '西東京市')
-                            n_date = n.get('date', '最近のニュース')
-                            n_url = n.get('url', '')
-                            
-                            link_markdown = f"\n\n🔗 [👉 号外NETで記事を読む（外部サイト）]({n_url})" if n_url else ""
-                            
-                            st.success(
-                                f"📰 **{n_title}**\n\n"
-                                f"📍 {n_place} | 📅 {n_date}"
-                                f"{link_markdown}"
-                            )
-                else:
-                    st.info("📰 **現在、新しい地域ニュースはありません。**\n\n🔗 [👉 号外NET 西東京市トップへ](https://nishitokyo.goguynet.jp/)")
-            except Exception as e:
-                st.error(f"ニュース取得エラー: {e}")
-
-        with col_main_right:
-            st.subheader("📅 今日のおすすめ活動")
-            st.info("💡 **昭和の思い出回想クイズ**: 20代の頃に聴いた名曲を思い出してみませんか？（『👥 交流・思い出』タブで体験可能）")
-
+        # ---------------------------------------------------------------
+        # 3. 高齢者本人モード（シンプル＆デイリーダッシュボード化）
+        # ---------------------------------------------------------------
+        else:
             st.markdown(f"""
-            <div class="genki-card" style="background-color: #fff3e0; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid #ffe0b2;">
-                <span style="font-size:20px; font-weight:bold; color:#E65100;">🌸 現在の元気ポイント</span><br>
-                <span style="font-size:42px; font-weight:bold; color:#D84315;">{st.session_state.get('genki_point', 0)} pt</span><br>
-                <span style="font-size:14px; color:#666;">継続日数: {st.session_state.get('continue_days', 1)}日目</span>
+            <div class="status-badge" style="background-color: #f0f2f6; padding: 10px; border-radius: 10px; margin-bottom: 15px;">
+                👤 <b>ご利用者</b>: {escape(str(st.session_state.get('senior_fullname', 'ご利用者')))} 様（{st.session_state.get('senior_age', 75)}歳） &nbsp;|&nbsp; 🏥 <b>所属</b>: {escape(str(st.session_state.get('facility_name', '一般')))}
             </div>
             """, unsafe_allow_html=True)
 
-# =================================----------------------------------
-# ページ 2: 🍱 献立作成
-# =================================----------------------------------
-elif page == "🍱 献立作成":
-    st.header("🍱 AI健康献立作成 ＆ レシピ・食事管理")
+            # 🔊 音声ガイドボタン
+            if st.button("🔊 画面の説明を声で聴く", width="stretch"):
+                trigger_action(sound=False, speak_text="こんにちは。今日の健康スタンプを集めたり、脳トレクイズに挑戦してみましょう。")
 
-    if "家族" in st.session_state.user_role:
-        st.info(f"👨‍👩‍👧 **[{st.session_state.get('linked_senior_name', 'ご家族')} 様の本日のお食事モニタリング]**")
-        rec = st.session_state.get('recommended_menu', {})
-        if rec and isinstance(rec, dict):
-            st.write(f"🌅 **朝食**: {rec.get('朝食', '鮭の塩焼き定食')} | 🌞 **昼食**: {rec.get('昼食', '具だくさんおうどん')} | 🌙 **夕食**: {rec.get('夕食', '豆腐ハンバーグ')}")
-        else:
-            st.write("🌅 **朝食**: 鮭の塩焼き定食 | 🌞 **昼食**: 具だくさんおうどん | 🌙 **夕食**: 豆腐ハンバーグ")
-        st.divider()
+            st.markdown("---")
 
+            # 【メイン1】今日やること＆ワンタップ元気ボタン
+            st.subheader("☀️ 今日やること")
+            col_a, col_b = st.columns(2)
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🍚 本日の最適献立", "📅 1週間献立＆買い物リスト", "🍳 思い出レシピ投票", "🥗 冷蔵庫のあまりもの検索", "⭐ お気に入り献立"])
-# ==========================================
-# 2. 献立表示コード（既存のtab1内に組み込み）
-# ==========================================
-    with tab1:
+            with col_a:
+                st.write("**1. あいさつ・元気報告**")
+                conn = sqlite3.connect(ACTIVITY_DB)
+                c = conn.cursor()
+                c.execute("SELECT timestamp FROM genki_status WHERE user_id=? AND date=?", (user_id, today_str))
+                already_genki = c.fetchone()
+                conn.close()
 
-        # =========================================================================
-        # 🛒 menu_txt 全抽出：統一 苦手・除外食材マスターリスト（全64種類）
-        # =========================================================================
+                if already_genki:
+                    st.success(f"✅ 「元気だよ」送信済み（{already_genki[0]}）")
+                    # 🗑️ 誤操作取消しボタン
+                    if st.button("↩️ 報告を取り消す", key="cancel_genki_btn"):
+                        conn = sqlite3.connect(ACTIVITY_DB)
+                        c = conn.cursor()
+                        c.execute("DELETE FROM genki_status WHERE user_id=? AND date=?", (user_id, today_str))
+                        c.execute("DELETE FROM daily_stamps WHERE user_id=? AND date=? AND action_type=?", (user_id, today_str, "今日元気？報告"))
+                        conn.commit()
+                        conn.close()
+                        st.toast("元気報告を取り消しました。")
+                        st.rerun()
+                else:
+                    if st.button("🌸 今日も元気だよ！", width="stretch", type="primary"):
+                        now_time = datetime.datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%H:%M")
+                        conn = sqlite3.connect(ACTIVITY_DB)
+                        c = conn.cursor()
+                        c.execute("INSERT OR REPLACE INTO genki_status VALUES (?, ?, ?)", (user_id, today_str, now_time))
+                        conn.commit()
+                        conn.close()
+                    
+                        add_stamp("今日元気？報告")
+                        trigger_action(sound=True, speak_text="元気な報告ありがとうございます！")
+                        st.rerun()
+
+            with col_b:
+                st.write("**2. 本日の献立チェック**")
+            
+                # session_stateから提案済み献立（recommended_menu）を取得
+                rec_menu = st.session_state.get("recommended_menu", None)
+            
+                # 1. 献立がすでに作成されている場合
+                if rec_menu and isinstance(rec_menu, dict):
+                    # 朝・昼・夕の献立テキストを取得（キーがない場合の初期値も設定）
+                    bf_title = rec_menu.get("朝食", "朝食メニュー")
+                    ln_title = rec_menu.get("昼食", "昼食メニュー")
+                    dn_title = rec_menu.get("夕食", "夕食メニュー")
+                
+                    # 今日の夕食メインを中心に要約表示（全体をわかりやすく表示）
+                    st.info(f"🍲 **本日の献立**\n\n・🌅 **朝**: {bf_title}\n・🌞 **昼**: {ln_title}\n・🌙 **夕**: {dn_title}")
+                
+                    if st.button("🍽️ 献立を確認した！", width="stretch", type="primary"):
+                        add_stamp("献立チェック")
+                        trigger_action(sound=True, speak_text="今日の献立を確認しましたね！美味しそうですね。")
+                        st.rerun()
+            
+                # 2. まだ献立が作成されていない場合
+                else:
+                    st.warning("⚠️ まだ今日の献立がつくられていません。")
+                    st.caption("「🍱 献立作成」ボタンからAIに本日の献立を作成してもらいましょう！")
+                
+                    # 献立作成画面へ直接移動するボタン（利便性向上）
+                    if st.button("🍱 献立作成画面へ移動する", width="stretch"):
+                        st.session_state.next_main_tab = "献立"
+                        st.rerun()
+
+            # 【メイン2】「できた！」を可視化するスタンプカード
+            st.subheader("💮 今日の健康スタンプカード")
+            conn = sqlite3.connect(ACTIVITY_DB)
+            c = conn.cursor()
+            c.execute("SELECT action_type FROM daily_stamps WHERE user_id=? AND date=?", (user_id, today_str))
+            stamps = [row[0] for row in c.fetchall()]
+            conn.close()
+
+            stamp_cols = st.columns(3)
+            actions = ["今日元気？報告", "献立チェック", "脳トレ完了"]
+
+            for idx, act in enumerate(actions):
+                with stamp_cols[idx]:
+                    if act in stamps:
+                        st.metric(label=act, value="済 💮")
+                    else:
+                        st.metric(label=act, value="未完了")
+
+            st.markdown("---")
+
+            # 【メイン3】日替わり脳トレ＆健康雑学
+            st.subheader("🧠 本日の脳トレ（日替わり）")
+            st.write(f"**Q. {today_quiz['q']}**")
+
+            user_ans = st.radio("答えを選んでください：", today_quiz["options"], key="quiz_ans")
+
+            if st.button("答え合わせする", width="stretch"):
+                if user_ans == today_quiz["ans"]:
+                    st.balloons()
+                    st.success(f"🎉 大正解！ {today_quiz['fact']}")
+                    add_stamp("脳トレ完了")
+                    trigger_action(sound=True, speak_text="大正解です！大変素晴らしいです！")
+                else:
+                    st.warning("惜しい！もう一度考えてみましょう。")
+                    trigger_action(sound=True, speak_text="もう一度選んでみてください。")
+
+            st.markdown("---")
+
+            # 【メイン4】地域イベント＆ニュース＆ポイントカード
+            col_main_left, col_main_right = st.columns(2)
+
+            with col_main_left:
+                # --- 1. 地域イベント表示エリア ---
+                c_ev_title, c_ev_btn = st.columns([3, 1])
+                with c_ev_title:
+                    st.subheader("🎪 近隣の地域イベント・健康講座")
+                with c_ev_btn:
+                    if st.button("🔄 更新", key="btn_refresh_ev"):
+                        with st.spinner("最新イベントを更新中..."):
+                            try:
+                                refresh_events()
+                                st.success("最新化完了！")
+                            except Exception as e:
+                                st.error(f"エラー: {e}")
+
+                raw_events = [] if TRIAL_MODE else get_home_events(st.session_state)
+                events_list = raw_events if isinstance(raw_events, list) else ([raw_events] if isinstance(raw_events, dict) else [])
+
+                if events_list:
+                    for e in events_list[:4]:
+                        if isinstance(e, dict):
+                            # URLが存在する場合のリンク作成処理
+                            url_str = e.get('url', '')
+                            link_markdown = f"\n\n🔗 [👉 詳細ページを見る（外部サイト）]({url_str})" if url_str else ""
+
+                            st.info(
+                                f"📢 **{e.get('title', '公民館 講座')}**\n\n"
+                                f"📍 {e.get('place', '西東京市')} | 📅 {e.get('datetime', e.get('date', '近日開催'))}"
+                                f"{link_markdown}"
+                            )
+                else:
+                    st.info("📅 **公民館 健康いきいき体操講座** (10:00〜 総合福祉センター)\n\n🔗 [👉 詳細ページを見る](https://www.city.nishitokyo.lg.jp/event/)")
+                    st.info("🎨 **シニア昭和写真展・談話会** (13:30〜 地域公民館)\n\n🔗 [👉 詳細ページを見る](https://www.city.nishitokyo.lg.jp/event/)")
+
+                # --- 2. 地域ニュース表示エリア（号外NET連携） ---
+                c_nw_title, c_nw_btn = st.columns([3, 1])
+                with c_nw_title:
+                    st.subheader("📰 おうちで読む地域ニュース（号外NET）")
+                with c_nw_btn:
+                    if st.button("📰 更新", key="btn_refresh_news"):
+                        with st.spinner("最新ニュースを取得中..."):
+                            try:
+                                # キャッシュをクリアして即時取得
+                                get_local_news.clear()
+                                st.success("更新完了！")
+                            except Exception as e:
+                                st.error(f"エラー: {e}")
+
+                try:
+                    news_items = get_local_news() if 'get_local_news' in globals() else []
+                    if news_items and isinstance(news_items, list):
+                        for n in news_items[:4]:
+                            if isinstance(n, dict):
+                                n_title = n.get('title', '地域ニュース')
+                                n_place = n.get('place', '西東京市')
+                                n_date = n.get('date', '最近のニュース')
+                                n_url = n.get('url', '')
+
+                                link_markdown = f"\n\n🔗 [👉 号外NETで記事を読む（外部サイト）]({n_url})" if n_url else ""
+
+                                st.success(
+                                    f"📰 **{n_title}**\n\n"
+                                    f"📍 {n_place} | 📅 {n_date}"
+                                    f"{link_markdown}"
+                                )
+                    else:
+                        st.info("📰 **現在、新しい地域ニュースはありません。**\n\n🔗 [👉 号外NET 西東京市トップへ](https://nishitokyo.goguynet.jp/)")
+                except Exception as e:
+                    st.error(f"ニュース取得エラー: {e}")
+
+            with col_main_right:
+                st.subheader("📅 今日のおすすめ活動")
+                st.info("💡 **昭和の思い出回想クイズ**: 20代の頃に聴いた名曲を思い出してみませんか？（『👥 交流・思い出』タブで体験可能）")
+
+                st.markdown(f"""
+                <div class="genki-card" style="background-color: #fff3e0; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid #ffe0b2;">
+                    <span style="font-size:20px; font-weight:bold; color:#E65100;">🌸 現在の活動ポイント</span><br>
+                    <span style="font-size:42px; font-weight:bold; color:#D84315;">{st.session_state.get('genki_point', 0)} pt</span><br>
+
+                </div>
+                """, unsafe_allow_html=True)
+
+    # =================================----------------------------------
+    # ページ 2: 🍱 献立作成
+    # =================================----------------------------------
+    elif page == "🍱 献立作成":
+        st.header("献立・レシピ")
+
         ALL_DISLIKE_MASTER = [
             # 肉類
             "鶏肉", "鶏むね肉", "鶏もも肉", "鶏ささみ", "鶏ひき肉", "豚肉", "豚薄切り肉", "豚コマ肉", "牛肉", "合挽き肉",
@@ -1907,1164 +1692,977 @@ elif page == "🍱 献立作成":
             # 主食・果物・乳製品
             "うどん", "マカロニ", "パン", "バナナ", "いちご", "りんご", "柿", "梨", "桃", "みかん", "プレーンヨーグルト", "牛乳"
         ]
-        
-        with st.expander(
-            "⚙️ 献立の好み・条件フィルター（和洋中・難易度・季節・苦手食材）",
-            expanded=False,
-        ):
-            fc1, fc2, fc3 = st.columns(3)
-            with fc1:
-                st.session_state.preferred_style = st.selectbox(
-                     "料理ジャンル",
-                     [None, "和食", "洋食", "中華"],
-                    format_func=lambda x: "指定なし" if x is None else x,
-                    key="t1_style",
-                )
-                st.session_state.preferred_difficulty = st.selectbox(
-                    "調理難易度",
-                    [None, "簡単", "普通", "本格的"],
-                    format_func=lambda x: "指定なし" if x is None else x,
-                    key="t1_diff",
-                )
-            with fc2:
-                st.session_state.favorite_food_type = st.radio(
-                    "メイン食材希望",
-                    ["指定なし", "魚", "肉"],
-                    horizontal=True,
-                    key="t1_food",
-                )
-                st.session_state.preferred_season = st.selectbox(
-                    "季節の指定",
-                    ["auto", "春", "夏", "秋", "冬"],
-                    format_func=lambda x: (
-                        "自動（現在の季節）" if x == "auto" else x
-                    ),
-                    key="t1_season",
-                )
-            with fc3:
-                # 🛠️ 1文字入力検索対応のガイド付きマルチセレクト
-                st.caption("💡 1文字入力すると食材名が検索できます")
-                default_dislikes_t1 = [x for x in st.session_state.get("dislike_foods", []) if x in ALL_DISLIKE_MASTER]
-                selected_dislike_t1 = st.multiselect(
-                    "🚫 苦手・除外食材を選択",
-                    ALL_DISLIKE_MASTER,
-                    default=default_dislikes_t1,
-                    key="t1_dislike_select",
-                    placeholder="文字を入力して検索..."
-                )
-                st.session_state.dislike_foods = selected_dislike_t1
 
-        # 最適カロリー厳選ラッパー関数を使用
-        if st.button("🤖 本日の最適献立を作成", use_container_width=True):
-            rec = generate_best_calorie_menu(
-                age=int(st.session_state.senior_age),
-                disease=st.session_state.senior_disease,
-                calorie=need_calorie,
-                season=st.session_state.preferred_season,
-                style=st.session_state.preferred_style,
-                difficulty=st.session_state.preferred_difficulty,
-                dislike=st.session_state.dislike_foods,
-                favorite_food=(
-                    None
-                    if st.session_state.favorite_food_type == "指定なし"
-                    else st.session_state.favorite_food_type
-                ),
-            )
-            if rec:
-                st.session_state.recommended_menu = rec
-                st.success("目標カロリーに最も近い献立を作成しました！")
+        meal_section = st.segmented_control(
+            "献立メニュー", ["今日の献立", "週間献立", "冷蔵庫検索", "外食マップ", "思い出レシピ", "お気に入り"],
+            default="今日の献立", required=True, key="meal_section", width="stretch", wrap=True,
+        )
+    # ==========================================
+    # 2. 献立表示コード（既存のtab1内に組み込み）
+    # ==========================================
+        if meal_section == "今日の献立":
+            method = st.segmented_control("献立の探し方", ["食材から夕食", "朝・昼・夕の献立"], default="食材から夕食", required=True, key="meal_method")
+            if method == "食材から夕食":
+                render_dinner()
             else:
-                st.warning(
-                    "条件に該当する献立が見つかりませんでした。フィルター条件を緩めて再試行してください。"
-                )
+                st.caption("プロフィールや選択条件をもとにした献立例です。")
 
-        if st.session_state.recommended_menu:
-            rec = st.session_state.recommended_menu
+                # =========================================================================
+                # 🛒 menu_txt 全抽出：統一 苦手・除外食材マスターリスト（全64種類）
+                # =========================================================================
 
-            # ⭐ 本日の献立のお気に入り登録ボタン
-            if st.button("⭐ この献立をお気に入りに保存", key="fav_daily_btn"):
-                if rec not in st.session_state.fav_daily_menus:
-                    st.session_state.fav_daily_menus.append(rec)
-                    st.toast("⭐ 本日の献立をお気に入りに保存しました！")
-                else:
-                    st.info("すでに保存されています。")
+                with st.expander(
+                    "⚙️ 献立の好み・条件フィルター（和洋中・難易度・季節・苦手食材）",
+                    expanded=False,
+                ):
+                    fc1, fc2, fc3 = st.columns(3)
+                    with fc1:
+                        st.session_state.preferred_style = st.selectbox(
+                             "料理ジャンル",
+                             [None, "和食", "洋食", "中華"],
+                            format_func=lambda x: "指定なし" if x is None else x,
+                            key="t1_style",
+                        )
+                        st.session_state.preferred_difficulty = st.selectbox(
+                            "調理難易度",
+                            [None, "簡単", "普通", "本格的"],
+                            format_func=lambda x: "指定なし" if x is None else x,
+                            key="t1_diff",
+                        )
+                    with fc2:
+                        st.session_state.favorite_food_type = st.radio(
+                            "メイン食材希望",
+                            ["指定なし", "魚", "肉"],
+                            horizontal=True,
+                            key="t1_food",
+                        )
+                        st.session_state.preferred_season = st.selectbox(
+                            "季節の指定",
+                            ["auto", "春", "夏", "秋", "冬"],
+                            format_func=lambda x: (
+                                "自動（現在の季節）" if x == "auto" else x
+                            ),
+                            key="t1_season",
+                        )
+                    with fc3:
+                        # 🛠️ 1文字入力検索対応のガイド付きマルチセレクト
+                        st.caption("💡 1文字入力すると食材名が検索できます")
+                        default_dislikes_t1 = [x for x in st.session_state.get("dislike_foods", []) if x in ALL_DISLIKE_MASTER]
+                        selected_dislike_t1 = st.multiselect(
+                            "🚫 苦手・除外食材を選択",
+                            ALL_DISLIKE_MASTER,
+                            default=default_dislikes_t1,
+                            key="t1_dislike_select",
+                            placeholder="文字を入力して検索..."
+                        )
+                        st.session_state.dislike_foods = selected_dislike_t1
 
-            if "詳細" in st.session_state.display_mode:
-                st.markdown(
-                    f"""
-                <div class="reason-box">
-                    💡 <b>⭐ AI管理栄養士の詳細分析・おすすめ理由</b><br>
-                    ・<b>配慮疾患</b>: {st.session_state.senior_disease}<br>
-                    ・<b>提案理由</b>: {rec.get('理由', '持病に配慮した栄養バランス調整済みです。')}<br>
-                    ・<b>栄養バランス</b>: {rec.get('バランス', 'バランス良好')}<br>
-                    ・<b>AIアドバイス</b>: {rec.get('アドバイス', '水分をしっかりと摂ってお召し上がりください。')}<br>
-                    ・<b>料理属性</b>: {rec.get('料理', '和食')} | 難易度: {rec.get('難易度', '普通')} | 季節: {rec.get('季節', '通年')}
-                </div>
-                """,
-                    unsafe_allow_html=True,
-                )
-
-                st.subheader("📊 栄養素・カロリー詳細（詳細モード表示）")
-                c_pfc1, c_pfc2, c_pfc3, c_pfc4 = st.columns(4)
-                c_pfc1.metric(
-                    "🔥 推定エネルギー",
-                    f"{rec.get('カロリー', need_calorie)} kcal",
-                    f"目標 {need_calorie} kcal",
-                )
-                c_pfc2.metric(
-                    "🥩 タンパク質(目標)", f"{int(need_calorie * 0.15 / 4)} g"
-                )
-                c_pfc3.metric("🥑 脂質(目標)", f"{int(need_calorie * 0.25 / 9)} g")
-                c_pfc4.metric(
-                    "🍚 炭水化物(目標)", f"{int(need_calorie * 0.60 / 4)} g"
-                )
-
-                try:
-                    nutrition_chart(
-                        need_calorie, st.session_state.senior_disease
+                # 最適カロリー厳選ラッパー関数を使用
+                if st.button("🤖 本日の最適献立を作成", width="stretch"):
+                    rec = generate_best_calorie_menu(
+                        age=int(st.session_state.senior_age),
+                        disease=st.session_state.senior_disease,
+                        calorie=need_calorie,
+                        season=st.session_state.preferred_season,
+                        style=st.session_state.preferred_style,
+                        difficulty=st.session_state.preferred_difficulty,
+                        dislike=st.session_state.dislike_foods,
+                        favorite_food=(
+                            None
+                            if st.session_state.favorite_food_type == "指定なし"
+                            else st.session_state.favorite_food_type
+                        ),
                     )
-                except Exception:
-                    pass
-                st.divider()
+                    if rec:
+                        st.session_state.recommended_menu = rec
+                        st.success("目標カロリーに最も近い献立を作成しました！")
+                    else:
+                        st.warning(
+                            "条件に該当する献立が見つかりませんでした。フィルター条件を緩めて再試行してください。"
+                        )
 
-            else:
-                st.markdown(
-                    f"""
-                <div class="reason-box">
-                   💡 <b>⭐ AIのおすすめバランス</b>: {rec.get('バランス', '栄養バランス良好')}（推定カロリー: 約 {rec.get('カロリー', need_calorie)} kcal / 目標 {need_calorie} kcal）
-                </div>
-                 """,
-                    unsafe_allow_html=True,
-                )
+                if st.session_state.recommended_menu:
+                    rec = st.session_state.recommended_menu
 
-            # --------------------------------------------------
-            # 🖼️ 朝食・昼食・夕食の画像と料理名表示エリア（新適用部分）
-            # --------------------------------------------------
-            col_bf, col_ln, col_dn = st.columns(3)
+                    # ⭐ 本日の献立のお気に入り登録ボタン
+                    if st.button("⭐ この献立をお気に入りに保存", key="fav_daily_btn"):
+                        if rec not in st.session_state.fav_daily_menus:
+                            st.session_state.fav_daily_menus.append(rec)
+                            st.toast("⭐ 本日の献立をお気に入りに保存しました！")
+                        else:
+                            st.info("すでに保存されています。")
 
-            # 朝食
-            with col_bf:
-                st.subheader("🌅 朝食")
-                bf_text = rec.get("朝食", "")
-                bf_img = get_menu_image_path(bf_text)
-                display_resized_menu_image(bf_img, caption="【朝食イメージ】")
-                st.write(f"### {bf_text}")
+                    if "詳細" in st.session_state.display_mode:
+                        st.markdown(
+                            f"""
+                        <div class="reason-box">
+                            💡 <b>献立の提案理由</b><br>
+                            ・<b>配慮疾患</b>: {st.session_state.senior_disease}<br>
+                            ・<b>提案理由</b>: {rec.get('理由', '持病に配慮した栄養バランス調整済みです。')}<br>
+                            ・<b>栄養バランス</b>: {rec.get('バランス', 'バランス良好')}<br>
+                            ・<b>献立データのコメント</b>: {rec.get('アドバイス', '水分をしっかりと摂ってお召し上がりください。')}<br>
+                            ・<b>料理属性</b>: {rec.get('料理', '和食')} | 難易度: {rec.get('難易度', '普通')} | 季節: {rec.get('季節', '通年')}
+                        </div>
+                        """,
+                            unsafe_allow_html=True,
+                        )
 
-            # 昼食
-            with col_ln:
-                st.subheader("🌞 昼食")
-                ln_text = rec.get("昼食", "")
-                ln_img = get_menu_image_path(ln_text)
-                display_resized_menu_image(ln_img, caption="【昼食イメージ】")
-                st.write(f"### {ln_text}")
+                        st.subheader("📊 栄養素・カロリー詳細（詳細モード表示）")
+                        c_pfc1, c_pfc2, c_pfc3, c_pfc4 = st.columns(4)
+                        c_pfc1.metric(
+                            "🔥 推定エネルギー",
+                            f"{rec.get('カロリー', need_calorie)} kcal",
+                            f"目標 {need_calorie} kcal",
+                        )
+                        c_pfc2.metric(
+                            "🥩 タンパク質(目標)", f"{int(need_calorie * 0.15 / 4)} g"
+                        )
+                        c_pfc3.metric("🥑 脂質(目標)", f"{int(need_calorie * 0.25 / 9)} g")
+                        c_pfc4.metric(
+                            "🍚 炭水化物(目標)", f"{int(need_calorie * 0.60 / 4)} g"
+                        )
 
-            # 夕食
-            with col_dn:
-                st.subheader("🌙 夕食")
-                dn_text = rec.get("夕食", "")
-                dn_img = get_menu_image_path(dn_text)
-                display_resized_menu_image(dn_img, caption="【夕食イメージ】")
-                st.write(f"### {dn_text}")
+                        try:
+                            nutrition_chart(
+                                need_calorie, st.session_state.senior_disease
+                            )
+                        except Exception:
+                            pass
+                        st.divider()
 
-            st.divider()
+                    else:
+                        st.markdown(
+                            f"""
+                        <div class="reason-box">
+                           💡 <b>⭐ AIのおすすめバランス</b>: {rec.get('バランス', '栄養バランス良好')}（推定カロリー: 約 {rec.get('カロリー', need_calorie)} kcal / 目標 {need_calorie} kcal）
+                        </div>
+                         """,
+                            unsafe_allow_html=True,
+                        )
 
-            # 食材リスト・PDF保存など
-            st.subheader("🛒 本日の買い物チェックリスト")
-            st.caption("買出し時に購入した食材をタップしてチェックを入れられます。")
-            all_meals_text = f"{rec.get('朝食', '')}・{rec.get('昼食', '')}・{rec.get('夕食', '')}"
-            parsed_ingredients = get_ingredients_enhanced(all_meals_text)
+                    # --------------------------------------------------
+                    # 🖼️ 朝食・昼食・夕食の画像と料理名表示エリア（新適用部分）
+                    # --------------------------------------------------
+                    col_bf, col_ln, col_dn = st.columns(3)
 
-            ck_col1, ck_col2 = st.columns(2)
-            for idx, ing in enumerate(parsed_ingredients):
-                if idx % 2 == 0:
-                    ck_col1.checkbox(f"🛒 {ing}", key=f"chk_daily_ing_{idx}")
-                else:
-                    ck_col2.checkbox(f"🛒 {ing}", key=f"chk_daily_ing_{idx}")
+                    # 朝食
+                    with col_bf:
+                        st.subheader("🌅 朝食")
+                        bf_text = rec.get("朝食", "")
+                        bf_img = get_menu_image_path(bf_text)
+                        display_resized_menu_image(bf_img, caption="【朝食イメージ】")
+                        st.write(f"### {bf_text}")
 
-            if st.button("📄 本日の献立表をPDF保存・印刷"):
-                try:
-                    pdf_bytes = export_pdf(rec)
+                    # 昼食
+                    with col_ln:
+                        st.subheader("🌞 昼食")
+                        ln_text = rec.get("昼食", "")
+                        ln_img = get_menu_image_path(ln_text)
+                        display_resized_menu_image(ln_img, caption="【昼食イメージ】")
+                        st.write(f"### {ln_text}")
+
+                    # 夕食
+                    with col_dn:
+                        st.subheader("🌙 夕食")
+                        dn_text = rec.get("夕食", "")
+                        dn_img = get_menu_image_path(dn_text)
+                        display_resized_menu_image(dn_img, caption="【夕食イメージ】")
+                        st.write(f"### {dn_text}")
+
+                    st.divider()
+
+                    # 食材リスト・PDF保存など
+                    st.subheader("🛒 本日の買い物チェックリスト")
+                    st.caption("買出し時に購入した食材をタップしてチェックを入れられます。")
+                    all_meals_text = f"{rec.get('朝食', '')}・{rec.get('昼食', '')}・{rec.get('夕食', '')}"
+                    parsed_ingredients = get_ingredients_enhanced(all_meals_text)
+
+                    ck_col1, ck_col2 = st.columns(2)
+                    for idx, ing in enumerate(parsed_ingredients):
+                        if idx % 2 == 0:
+                            ck_col1.checkbox(f"🛒 {ing}", key=f"chk_daily_ing_{idx}")
+                        else:
+                            ck_col2.checkbox(f"🛒 {ing}", key=f"chk_daily_ing_{idx}")
+
                     st.download_button(
-                        "📥 PDFをダウンロード",
-                        data=pdf_bytes,
+                        "本日の献立表をPDF保存",
+                        data=export_pdf(rec, parsed_ingredients),
                         file_name=f"menu_{today_str}.pdf",
                         mime="application/pdf",
+                        on_click="ignore",
                     )
-                except Exception as e:
-                    st.success("📄 本日の献立データPDFの準備が完了しました！")
 
-        # ⭐ 本日のお気に入り献立一覧表示
-        if st.session_state.fav_daily_menus:
-            st.divider()
-            with st.expander("⭐ お気に入り保存済みの本日献立リスト", expanded=False):
-                for i, f_menu in enumerate(st.session_state.fav_daily_menus):
-                    st.markdown(
-                        f"**【お気に入り {i+1}】** 朝: {f_menu.get('朝食')} / 昼: {f_menu.get('昼食')} / 夕: {f_menu.get('夕食')} ({f_menu.get('カロリー')}kcal)"
-                    )
-    import inspect
+                # ⭐ 本日のお気に入り献立一覧表示
+                if st.session_state.fav_daily_menus:
+                    st.divider()
+                    with st.expander("⭐ お気に入り保存済みの本日献立リスト", expanded=False):
+                        for i, f_menu in enumerate(st.session_state.fav_daily_menus):
+                            st.markdown(
+                                f"**【お気に入り {i+1}】** 朝: {f_menu.get('朝食')} / 昼: {f_menu.get('昼食')} / 夕: {f_menu.get('夕食')} ({f_menu.get('カロリー')}kcal)"
+                            )
+        import inspect
 
-    with tab2:
-        st.subheader("📅 1週間献立 ＆ まとめ買い物リスト")
+        if meal_section == "外食マップ":
+            render_dining()
 
-        # 1. 好み・条件フィルター
-        with st.expander(
-            "⚙️ 1週間献立の好み・条件フィルター（和洋中・難易度・季節・苦手食材）",
-            expanded=False,
-        ):
-            w_fc1, w_fc2, w_fc3 = st.columns(3)
-            with w_fc1:
-                st.session_state.preferred_style = st.selectbox(
-                    "料理ジャンル",
-                    [None, "和食", "洋食", "中華"],
-                    format_func=lambda x: "指定なし" if x is None else x,
-                    key="t2_style",
-                )
-                st.session_state.preferred_difficulty = st.selectbox(
-                    "調理難易度",
-                    [None, "簡単", "普通", "本格的"],
-                    format_func=lambda x: "指定なし" if x is None else x,
-                    key="t2_diff",
-                )
-            with w_fc2:
-                st.session_state.favorite_food_type = st.radio(
-                    "メイン食材希望",
-                    ["指定なし", "魚", "肉"],
-                    horizontal=True,
-                    key="t2_food",
-                )
-                st.session_state.preferred_season = st.selectbox(
-                    "季節の指定",
-                    ["auto", "春", "夏", "秋", "冬"],
-                    format_func=lambda x: (
-                        "自動（現在の季節）" if x == "auto" else x
-                    ),
-                    key="t2_season",
-                )
-            with w_fc3:
-                st.caption("💡 1文字入力すると食材名が検索できます")
-                default_dislikes_t2 = [x for x in st.session_state.get("dislike_foods", []) if x in ALL_DISLIKE_MASTER]
-                selected_dislike_t2 = st.multiselect(
-                    "🚫 苦手・除外食材（選択式）",
-                    ALL_DISLIKE_MASTER,
-                    default=default_dislikes_t2,
-                    key="t2_dislike_select",
-                    placeholder="文字を入力して検索..."
-                )
-                st.session_state.dislike_foods = selected_dislike_t2
+        if meal_section == "週間献立":
+            st.subheader("📅 1週間献立 ＆ まとめ買い物リスト")
 
-        # 1週間分を作成ボタン
-        if st.button("🤖 1週間分を作成", use_container_width=True):
-            from modules.weekly_menu import generate_weekly_menu
-            import inspect
-
-            all_kwargs = {
-                "age": int(st.session_state.senior_age),
-                "disease": st.session_state.senior_disease,
-                "calorie": need_calorie,
-                "season": st.session_state.preferred_season,
-                "style": st.session_state.preferred_style,
-                "difficulty": st.session_state.preferred_difficulty,
-                "dislike": st.session_state.dislike_foods,
-                "favorite_food": (
-                    None
-                    if st.session_state.favorite_food_type == "指定なし"
-                    else st.session_state.favorite_food_type
-                ),
-            }
-  
-            sig = inspect.signature(generate_weekly_menu)
-            valid_kwargs = {
-                k: v for k, v in all_kwargs.items() if k in sig.parameters
-            }
-
-            weekly = generate_weekly_menu(**valid_kwargs)
-            st.session_state.weekly_menu = weekly
-            st.success("1週間分の献立を作成しました！")
-
-        if st.session_state.get("weekly_menu"):
-            # ⭐ 1週間分献立のお気に入り登録ボタン
-            if st.button(
-                "⭐ この1週間献立をお気に入りに保存", key="fav_weekly_btn"
+            # 1. 好み・条件フィルター
+            with st.expander(
+                "⚙️ 1週間献立の好み・条件フィルター（和洋中・難易度・季節・苦手食材）",
+                expanded=False,
             ):
-                if (
-                    st.session_state.weekly_menu
-                    not in st.session_state.fav_weekly_menus
-                ):
-                    st.session_state.fav_weekly_menus.append(
-                        st.session_state.weekly_menu
+                w_fc1, w_fc2, w_fc3 = st.columns(3)
+                with w_fc1:
+                    st.session_state.preferred_style = st.selectbox(
+                        "料理ジャンル",
+                        [None, "和食", "洋食", "中華"],
+                        format_func=lambda x: "指定なし" if x is None else x,
+                        key="t2_style",
                     )
-                    st.toast("⭐ 1週間献立をお気に入りに保存しました！")
-                else:
-                    st.info("すでに保存されています。")
+                    st.session_state.preferred_difficulty = st.selectbox(
+                        "調理難易度",
+                        [None, "簡単", "普通", "本格的"],
+                        format_func=lambda x: "指定なし" if x is None else x,
+                        key="t2_diff",
+                    )
+                with w_fc2:
+                    st.session_state.favorite_food_type = st.radio(
+                        "メイン食材希望",
+                        ["指定なし", "魚", "肉"],
+                        horizontal=True,
+                        key="t2_food",
+                    )
+                    st.session_state.preferred_season = st.selectbox(
+                        "季節の指定",
+                        ["auto", "春", "夏", "秋", "冬"],
+                        format_func=lambda x: (
+                            "自動（現在の季節）" if x == "auto" else x
+                        ),
+                        key="t2_season",
+                    )
+                with w_fc3:
+                    st.caption("💡 1文字入力すると食材名が検索できます")
+                    default_dislikes_t2 = [x for x in st.session_state.get("dislike_foods", []) if x in ALL_DISLIKE_MASTER]
+                    selected_dislike_t2 = st.multiselect(
+                        "🚫 苦手・除外食材（選択式）",
+                        ALL_DISLIKE_MASTER,
+                        default=default_dislikes_t2,
+                        key="t2_dislike_select",
+                        placeholder="文字を入力して検索..."
+                    )
+                    st.session_state.dislike_foods = selected_dislike_t2
 
-            st.divider()
+            # 1週間分を作成ボタン
+            if st.button("🤖 1週間分を作成", width="stretch"):
+                from modules.weekly_menu import generate_weekly_menu
+                import inspect
 
-            # 2. 🔀 ソート順選択
-            sort_col1, sort_col2 = st.columns([1, 2])
-            with sort_col1:
-                st.write("**🔀 表示順の変更:**")
-            with sort_col2:
-                w_sort_option = st.selectbox(
-                    "ソート順を選択してください",
-                    [
-                        "標準（曜日順）",
-                        "カロリーの低い順",
-                        "カロリーの高い順",
-                        "料理ジャンル別（和洋中）",
-                    ],
-                    key="weekly_sort_opt",
-                )
+                all_kwargs = {
+                    "age": int(st.session_state.senior_age),
+                    "disease": st.session_state.senior_disease,
+                    "calorie": need_calorie,
+                    "season": st.session_state.preferred_season,
+                    "style": st.session_state.preferred_style,
+                    "difficulty": st.session_state.preferred_difficulty,
+                    "dislike": st.session_state.dislike_foods,
+                    "favorite_food": (
+                        None
+                        if st.session_state.favorite_food_type == "指定なし"
+                        else st.session_state.favorite_food_type
+                    ),
+                }
   
-            if isinstance(st.session_state.weekly_menu, dict):
-                items_list = list(st.session_state.weekly_menu.items())
-            else:
-                items_list = [
-                    (m.get("曜日", f"Day{i+1}"), m)
-                    for i, m in enumerate(st.session_state.weekly_menu)
-                ]
+                sig = inspect.signature(generate_weekly_menu)
+                valid_kwargs = {
+                    k: v for k, v in all_kwargs.items() if k in sig.parameters
+                }
 
-            if w_sort_option == "カロリーの低い順":
-                items_list.sort(key=lambda x: x[1].get("カロリー", 0))
-            elif w_sort_option == "カロリーの高い順":
-                items_list.sort(
-                    key=lambda x: x[1].get("カロリー", 0), reverse=True
-                )
-            elif w_sort_option == "料理ジャンル別（和洋中）":
-                items_list.sort(
-                    key=lambda x: str(
-                        x[1].get("料理", x[1].get("japanese_style", ""))
-                    )
-                )
-
-            # 1週間カード一括表示
-            weekly_all_text = ""
-            for d, m in items_list:
-                weekly_card(d, m)
-                if isinstance(m, dict):
-                    weekly_all_text += f"{m.get('朝食','')} {m.get('昼食','')} {m.get('夕食','')} "
-
-            st.divider()
-
-            # 🛠️ 1週間分のまとめ買いチェックリスト
-            st.subheader("🛒 今週1週間分のまとめ買いチェックリスト")
-            st.caption("スーパーでの買出しに便利なタップ式チェックリストです。")
-
-            weekly_ingredients = get_ingredients_enhanced(weekly_all_text)
-            
-            if weekly_ingredients:
-                w_col1, w_col2 = st.columns(2)
-                for idx, ing in enumerate(weekly_ingredients):
-                    if idx % 2 == 0:
-                        w_col1.checkbox(f"🛒 {ing}", key=f"chk_weekly_ing_{idx}")
-                    else:
-                        w_col2.checkbox(f"🛒 {ing}", key=f"chk_weekly_ing_{idx}")
-            else:
-                st.caption("※ まとめ買い食材データが取得できませんでした。")
-
-            st.divider()
-
-            # 📄 PDFダウンロードボタン
-            if st.button("📄 1週間献立表PDFをダウンロード"):
-                try:
-                    w_pdf = export_weekly_pdf(st.session_state.weekly_menu)
-                    st.download_button(
-                        "📥 1週間PDFをダウンロード",
-                        data=w_pdf,
-                        file_name=f"weekly_menu_{today_str}.pdf",
-                        mime="application/pdf",
-                    )
-                except Exception:
-                    st.success("📄 1週間献立表PDFの生成準備が整いました！")
-
-        # ⭐ 1週間のお気に入り献立一覧表示
-        if st.session_state.fav_weekly_menus:
-            st.divider()
-            with st.expander("⭐ 保存済みの1週間献立セット", expanded=False):
-                for idx, w_set in enumerate(st.session_state.fav_weekly_menus):
-                    st.markdown(f"**【お気に入りセット {idx+1}】** (7日分の献立)")
-                    if isinstance(w_set, dict):
-                        for day_k, day_v in w_set.items():
-                            if isinstance(day_v, dict):
-                                st.caption(
-                                    f"・{day_k}: 朝[{day_v.get('朝食', '')}] / 昼[{day_v.get('昼食', '')}] / 夕[{day_v.get('夕食', '')}]"
-                                )
-
-    with tab3:
-        st.subheader("🍳 思い出の味・リクエスト投稿 ＆ みんなのレシピ掲示板")
-        st.caption("「昔お母さんが作ってくれた思い出の味」や「もう一度食べたい料理」を写真と一緒に投稿して、みんなで『食べたい！』を投票し合いましょう。")
-
-        # -------------------------------------------------------------------
-        # 1. ➕ 新しい思い出レシピ・リクエストの投稿フォーム
-        # -------------------------------------------------------------------
-        with st.expander("➕ 新しい思い出レシピ・食べたい料理を投稿する", expanded=False):
-            r_title = st.text_input("🍳 料理名・思い出の味タイトル", "母の特製 具だくさん肉じゃが")
-            uploaded_r_photo = st.file_uploader("📸 料理の写真を選択（任意）", type=["jpg", "png", "jpeg"], key="recipe_photo_uploader")
-            r_story = st.text_area("💬 この料理にまつわる思い出・こだわりポイント", "隠し味に少し甘めの醤油を使っていて、じゃがいもがホクホクで美味しかった思い出の味です。")
-            
-            if st.button("🍳 思い出レシピを掲示板へ投稿する", use_container_width=True):
-                if not r_title.strip():
-                    st.warning("料理名を入力してください。")
+                weekly = generate_weekly_menu(**valid_kwargs)
+                st.session_state.weekly_menu = weekly
+                if weekly:
+                    st.success(f"{len(weekly)}日分の献立を表示しました。")
                 else:
-                    try:
-                        saved_r_img_path = ""
-                        if uploaded_r_photo is not None:
-                            target_dir = UPLOAD_STUDENT_DIR if "UPLOAD_STUDENT_DIR" in globals() and "学生" in st.session_state.get("user_role", "") else UPLOAD_SENIOR_DIR if "UPLOAD_SENIOR_DIR" in globals() else "uploads"
-                            
-                            if not os.path.exists(target_dir):
-                                os.makedirs(target_dir, exist_ok=True)
-                                
-                            saved_r_img_path = os.path.join(target_dir, f"recipe_{uploaded_r_photo.name}")
-                            with open(saved_r_img_path, "wb") as f:
-                                f.write(uploaded_r_photo.getbuffer())
+                    st.info("条件に合う週間献立が見つかりませんでした。")
 
-                        msg_text = f"【🍳 思い出レシピ】 『{r_title}』\n\n{r_story}"
-                        
-                        add_post(st.session_state.senior_fullname, msg_text, saved_r_img_path)
-                        
-                        if "add_stamp" in globals():
-                            add_stamp("レシピ投稿")
-                        if "trigger_action" in globals():
-                            trigger_action(sound=True, speak_text="思い出のレシピを投稿しました！")
-                            
-                        st.success("🎉 思い出レシピをタイムラインへ投稿しました！")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"投稿エラー: {e}")
-
-        st.divider()
-
-        # -------------------------------------------------------------------
-        # 2. 📰 みんなの思い出レシピタイムライン（閲覧・投票・削除機能）
-        # -------------------------------------------------------------------
-        st.subheader("📰 みんなの思い出レシピ＆リクエスト一覧")
-        try:
-            posts = get_posts()
-            recipe_posts = []
-
-            if posts:
-                for p in posts:
-                    p_msg = p[2] if isinstance(p, tuple) and len(p) > 2 else p.get("message", "") if isinstance(p, dict) else ""
-                    if "【🍳 思い出レシピ】" in p_msg or "レシピ" in p_msg:
-                        recipe_posts.append(p)
-
-            if recipe_posts:
-                for idx, p in enumerate(recipe_posts[:10]):
-                    if isinstance(p, tuple):
-                        p_id = p[0]
-                        p_author = p[1]
-                        p_msg = p[2] if len(p) > 2 else ""
-                        p_img = p[3] if len(p) > 3 else ""
-                        p_time = p[7] if len(p) > 7 else ""
-                        p_likes = p[8] if len(p) > 8 else 0
+            if st.session_state.get("weekly_menu"):
+                # ⭐ 1週間分献立のお気に入り登録ボタン
+                if st.button(
+                    "⭐ この1週間献立をお気に入りに保存", key="fav_weekly_btn"
+                ):
+                    if (
+                        st.session_state.weekly_menu
+                        not in st.session_state.fav_weekly_menus
+                    ):
+                        st.session_state.fav_weekly_menus.append(
+                            st.session_state.weekly_menu
+                        )
+                        st.toast("⭐ 1週間献立をお気に入りに保存しました！")
                     else:
-                        p_id = p.get("id")
-                        p_author = p.get("username", "ご利用者")
-                        p_msg = p.get("message", "")
-                        p_img = p.get("image_path", "")
-                        p_time = p.get("created_at", "")
-                        p_likes = p.get("likes", 0)
+                        st.info("すでに保存されています。")
 
-                    with st.container():
-                        st.markdown(f"👤 **{p_author}** 様の思い出の味 &nbsp;&nbsp; <small style='color:gray;'>{p_time}</small>", unsafe_allow_html=True)
-                        st.write(f"{p_msg}")
-                        
-                        if p_img and os.path.exists(p_img):
-                            st.image(p_img, width=320, caption="思い出の料理写真")
-                        
-                        col_lk1, col_del = st.columns([4, 2])
-                        with col_lk1:
-                            # idxを付与してキーの絶対重複を回避
-                            if st.button(f"😋 食べたい！ ({p_likes})", key=f"rec_like_{p_id}_{idx}"):
-                                add_like(p_id, st.session_state.senior_fullname)
-                                if "trigger_action" in globals():
-                                    trigger_action(sound=True, speak_text="食べたい！を投票しました。")
-                                st.rerun()
-                        
-                        # 🗑️ 投稿削除ボタン
-                        with col_del:
-                            if (p_author == st.session_state.senior_fullname or 
-                                "施設" in st.session_state.get("user_role", "") or 
-                                "システム管理者" in st.session_state.get("user_role", "")):
-                                if st.button("🗑️ 投稿を削除", key=f"rec_del_{p_id}_{idx}"):
-                                    delete_post(p_id)
-                                    st.toast("投稿を削除しました。")
-                                    st.rerun()
-                        st.divider()
-            else:
-                st.info("💡 まだ思い出レシピの投稿がありません。最初の思い出の味を投稿してみましょう！")
-        except Exception as e:
-            st.error(f"レシピタイムライン取得エラー: {e}")
-        
+                st.divider()
 
-    with tab4:
-        st.subheader("🥗 冷蔵庫のあまりもの検索 ＆ 苦手食材フィルター")
-        st.caption("今ある食材と苦手な食材を選択すると、AIが最適なレシピ候補を自動検索します。")
-
-        # 1. 選択肢とする食材一覧の標準マスター（36種類に大幅拡張）
-        ALL_INGREDIENTS = [
-            # 肉類
-            "鶏肉", "鶏むね肉", "鶏もも肉", "鶏ささみ", "鶏ひき肉", "豚肉", "豚薄切り肉", "豚コマ肉", "牛肉", "合挽き肉",
-            # 魚介類
-            "生鮭", "鮭", "真鯖", "さば", "さんま", "あじ", "さわら", "ブリ切り身", "ブリ", "たら切り身", "たら", "白身魚", "生魚切り身", "ツナ缶",
-            # 野菜・きのこ類
-            "キャベツ", "春キャベツ", "レタス", "トマト", "きゅうり", "大根", "大根おろし", "人参", "玉ねぎ", "新玉ねぎ", "長ねぎ",
-            "白菜", "ほうれん草", "小松菜", "ごぼう", "れんこん", "じゃがいも", "アスパラガス", "菜の花", "たけのこ", "水菜",
-            "ピーマン", "ナス", "オクラ", "もやし", "こんにゃく", "しめじ", "椎茸", "まいたけ", "エリンギ",
-            # 豆腐・大豆・卵・海藻
-            "豆腐", "厚揚げ", "油揚げ", "納豆", "高野豆腐", "おから", "卵", "ひじき", "わかめ", "昆布",
-            # 主食・果物・乳製品
-            "うどん", "マカロニ", "パン", "バナナ", "いちご", "りんご", "柿", "梨", "桃", "みかん", "プレーンヨーグルト", "牛乳"
-        ]
-
-        # 2. 食材入力エリア（2列配置）
-        col_fridge, col_dislike = st.columns(2)
-
-        with col_fridge:
-            st.markdown("##### 🛒 今ある食材を選択（複数選択可）")
-            st.caption("💡 1文字入力すると食材名を検索・絞り込みできます")
-            fridge_items = st.multiselect(
-                "冷蔵庫にある食材",
-                ALL_INGREDIENTS,
-                default=[],
-                key="tab4_fridge_select",
-                placeholder="文字を入力して検索..."
-            )
-
-        with col_dislike:
-            st.markdown("##### 🚫 苦手・避けたい食材を選択（選択式フィルター）")
-            st.caption("💡 1文字入力すると食材名を検索・絞り込みできます")
-            # セッションに保存されている苦手食材を初期値として反映
-            default_dislikes = [item for item in st.session_state.get("dislike_foods", []) if item in ALL_INGREDIENTS]
-            
-            selected_dislikes = st.multiselect(
-                "除外したい食材",
-                ALL_INGREDIENTS,
-                default=default_dislikes,
-                key="tab4_dislike_select",
-                placeholder="文字を入力して検索..."
-            )
-            # 選択された苦手食材をセッション状態にも同期更新
-            st.session_state.dislike_foods = selected_dislikes
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # 3. レシピ検索実行
-        if st.button("🤖 この食材からレシピを提案・検索", use_container_width=True):
-            if fridge_items:
-                try:
-                    # fridge_recipeモジュールの呼び出し
-                    candidates = recommend_from_fridge(
-                        fridge_items,
-                        int(st.session_state.senior_age),
-                        st.session_state.senior_disease,
-                        need_calorie
+                # 2. 🔀 ソート順選択
+                sort_col1, sort_col2 = st.columns([1, 2])
+                with sort_col1:
+                    st.write("**🔀 表示順の変更:**")
+                with sort_col2:
+                    w_sort_option = st.selectbox(
+                        "ソート順を選択してください",
+                        [
+                            "標準（曜日順）",
+                            "カロリーの低い順",
+                            "カロリーの高い順",
+                            "料理ジャンル別（和洋中）",
+                        ],
+                        key="weekly_sort_opt",
                     )
-                    
-                    if candidates:
-                        # 苦手食材フィルターの適用（苦手食材が朝・昼・夕のメニューに含まれていれば除外）
-                        filtered_candidates = []
-                        for score, rate, lack, row in candidates:
-                            meal_text = f"{row.get('breakfast', '')} {row.get('lunch', '')} {row.get('dinner', '')}"
-                            
-                            # 苦手食材が含まれているかチェック
-                            has_dislike = any(dislike_item in meal_text for dislike_item in selected_dislikes)
-                            if not has_dislike:
-                                filtered_candidates.append((score, rate, lack, row))
+  
+                if isinstance(st.session_state.weekly_menu, dict):
+                    items_list = list(st.session_state.weekly_menu.items())
+                else:
+                    items_list = [
+                        (m.get("曜日", f"Day{i+1}"), m)
+                        for i, m in enumerate(st.session_state.weekly_menu)
+                    ]
 
-                        if filtered_candidates:
-                            st.success(f"🎉 条件に合うおすすめの献立候補が {len(filtered_candidates[:3])} 件見つかりました！")
-                            
-                            for score, rate, lack, row in filtered_candidates[:3]:
-                                st.info(
-                                    f"💡 **手持ち食材一致率: {rate}%** (一致数: {score} 個)\n\n"
-                                    f"🌅 **朝食**: {row.get('breakfast')}\n\n"
-                                    f"🌞 **昼食**: {row.get('lunch')}\n\n"
-                                    f"🌙 **夕食**: {row.get('dinner')}\n\n"
-                                    f"🛒 **不足している買い足し食材**: {', '.join(lack) if lack else '✨ なし（今ある食材だけで作れます！）'}"
-                                )
+                if w_sort_option == "カロリーの低い順":
+                    items_list.sort(key=lambda x: x[1].get("カロリー", 0))
+                elif w_sort_option == "カロリーの高い順":
+                    items_list.sort(
+                        key=lambda x: x[1].get("カロリー", 0), reverse=True
+                    )
+                elif w_sort_option == "料理ジャンル別（和洋中）":
+                    items_list.sort(
+                        key=lambda x: str(
+                            x[1].get("料理", x[1].get("japanese_style", ""))
+                        )
+                    )
+
+                # 1週間カード一括表示
+                weekly_all_text = ""
+                for d, m in items_list:
+                    weekly_card(d, m)
+                    if isinstance(m, dict):
+                        weekly_all_text += f"{m.get('朝食','')} {m.get('昼食','')} {m.get('夕食','')} "
+
+                st.divider()
+
+                # 🛠️ 1週間分のまとめ買いチェックリスト
+                st.subheader("🛒 今週1週間分のまとめ買いチェックリスト")
+                st.caption("スーパーでの買出しに便利なタップ式チェックリストです。")
+
+                weekly_ingredients = get_ingredients_enhanced(weekly_all_text)
+            
+                if weekly_ingredients:
+                    w_col1, w_col2 = st.columns(2)
+                    for idx, ing in enumerate(weekly_ingredients):
+                        if idx % 2 == 0:
+                            w_col1.checkbox(f"🛒 {ing}", key=f"chk_weekly_ing_{idx}")
                         else:
-                            st.warning("⚠️ 苦手食材フィルターによりすべての候補が除外されました。苦手食材の指定を緩めて再試行してください。")
-                    else:
-                        st.warning("選択した食材に合うレシピ候補が見つかりませんでした。食材を増やして再検索してみてください。")
-                except Exception as e:
-                    st.error(f"検索処理エラー: {e}")
-            else:
-                st.warning("冷蔵庫にある食材を1つ以上選択してください。")
+                            w_col2.checkbox(f"🛒 {ing}", key=f"chk_weekly_ing_{idx}")
+                else:
+                    st.caption("※ まとめ買い食材データが取得できませんでした。")
 
-    # -------------------------------------------------------------------
-    # ⭐ 5. お気に入り献立一覧タブ（日替わり＆1週間分の閲覧・削除機能）
-    # -------------------------------------------------------------------
-    with tab5:
-        st.subheader("⭐ 保存したお気に入り献立一覧")
-        
-        # サブタブで1日分と1週間分を整理
-        fav_sub1, fav_sub2 = st.tabs(["🍚 お気に入り「本日の献立」", "📅 お気に入り「1週間献立」"])
-        
-        # --- 1日分の献立 ---
-        with fav_sub1:
-            st.markdown("##### 🍚 保存した1日分の献立")
-            if st.session_state.fav_daily_menus:
-                for idx, f_menu in enumerate(st.session_state.fav_daily_menus):
-                    with st.expander(f"⭐ お気に入り {idx+1} （推定: {f_menu.get('カロリー', need_calorie)} kcal）", expanded=(idx == 0)):
-                        col_f1, col_f2, col_f3 = st.columns(3)
-                        with col_f1:
-                            st.write(f"🌅 **朝食**: {f_menu.get('朝食', '-')}")
-                        with col_f2:
-                            st.write(f"🌞 **昼食**: {f_menu.get('昼食', '-')}")
-                        with col_f3:
-                            st.write(f"🌙 **夕食**: {f_menu.get('夕食', '-')}")
-                        
-                        st.caption(f"💡 **AIのおすすめ**: {f_menu.get('バランス', '栄養バランス良好')}")
-                        
-                        # 削除機能
-                        if st.button("🗑️ このお気に入りを削除", key=f"del_fav_daily_{idx}"):
-                            st.session_state.fav_daily_menus.pop(idx)
-                            st.toast("お気に入りを削除しました。")
-                            st.rerun()
-            else:
-                st.info("💡 まだ1日分のお気に入り献立がありません。「本日の最適献立」タブから保存してみましょう！")
+                st.divider()
 
-        # --- 1週間分の献立 ---
-        with fav_sub2:
-            st.markdown("##### 📅 保存した1週間分の献立セット")
+                st.download_button(
+                    "1週間の献立表をPDF保存",
+                    data=export_weekly_pdf(st.session_state.weekly_menu, weekly_ingredients),
+                    file_name=f"weekly_menu_{today_str}.pdf",
+                    mime="application/pdf",
+                    on_click="ignore",
+                )
+
+            # ⭐ 1週間のお気に入り献立一覧表示
             if st.session_state.fav_weekly_menus:
-                for idx, w_set in enumerate(st.session_state.fav_weekly_menus):
-                    with st.expander(f"⭐ 1週間献立セット {idx+1}", expanded=(idx == 0)):
+                st.divider()
+                with st.expander("⭐ 保存済みの1週間献立セット", expanded=False):
+                    for idx, w_set in enumerate(st.session_state.fav_weekly_menus):
+                        st.markdown(f"**【お気に入りセット {idx+1}】** (7日分の献立)")
                         if isinstance(w_set, dict):
                             for day_k, day_v in w_set.items():
-                                st.write(f"**【{day_k}】** 朝: {day_v.get('朝食')} | 昼: {day_v.get('昼食')} | 夕: {day_v.get('夕食')}")
-                        elif isinstance(w_set, list):
-                            for day_item in w_set:
-                                st.write(f"**【{day_item.get('曜日', 'Day')}】** 朝: {day_item.get('朝食')} | 昼: {day_item.get('昼食')} | 夕: {day_item.get('夕食')}")
-                        
-                        # 削除機能
-                        if st.button("🗑️ この1週間セットを削除", key=f"del_fav_weekly_{idx}"):
-                            st.session_state.fav_weekly_menus.pop(idx)
-                            st.toast("1週間お気に入りセットを削除しました。")
-                            st.rerun()
+                                if isinstance(day_v, dict):
+                                    st.caption(
+                                        f"・{day_k}: 朝[{day_v.get('朝食', '')}] / 昼[{day_v.get('昼食', '')}] / 夕[{day_v.get('夕食', '')}]"
+                                    )
+
+        if meal_section == "思い出レシピ":
+            if not st.session_state.is_logged_in:
+                st.info("思い出レシピの閲覧・投稿・投票はログイン後に使えます。")
+                if st.button("ログイン・会員登録", key="recipes_login"):
+                    open_login()
             else:
-                st.info("💡 まだ1週間のお気に入り献立セットがありません。「1週間献立＆買い物リスト」タブから保存してみましょう！")
+                st.subheader("🍳 思い出の味・リクエスト投稿 ＆ みんなのレシピ掲示板")
+                st.caption("「昔お母さんが作ってくれた思い出の味」や「もう一度食べたい料理」を写真と一緒に投稿して、みんなで『食べたい！』を投票し合いましょう。")
 
-# -------------------------------------------------------------------
-# ページ 3: 🩺 健康記録
-# -------------------------------------------------------------------
-elif page == "🩺 健康記録":
-    st.header("🩺 健康記録 ＆ バイタル推移・個別カルテ")
-
-    if "施設" in st.session_state.user_role:
-        st.subheader("📝 【施設職員用】申し送り＆バイタル入力・カルテ照会")
-        seniors_list = get_all_seniors()
-        s_names = [s[1] if isinstance(s, tuple) else s.get("name") for s in seniors_list] if seniors_list else [st.session_state.senior_fullname]
-        target_senior = st.selectbox("記録・カルテ対象者選択", s_names)
-        
-        u_info = get_user(target_senior)
-        if u_info:
-            if isinstance(u_info, dict):
-                s_age = u_info.get('age', 75)
-                s_dis = u_info.get('disease', '高血圧')
-            elif isinstance(u_info, tuple):
-                s_age = u_info[2] if len(u_info) > 2 else 75
-                s_dis = u_info[6] if len(u_info) > 6 else '高血圧'
-            st.info(f"👤 **カルテ要約**: {target_senior} 様（{s_age}歳） | 持病: {s_dis}")
-
-        with st.form("facility_health_input_form"):
-            fc1, fc2, fc3 = st.columns(3)
-            with fc1:
-                f_meal = st.selectbox("🍚 食事の様子", ["◎ 完食", "○ 8割摂取", "△ 半分摂取", "× 食欲不振"])
-                f_water = st.number_input("💧 水分摂取量 (ml)", min_value=0, max_value=3000, value=1200, step=50)
-            with fc2:
-                f_weight = st.number_input("秤 体重 (kg)", min_value=30.0, max_value=150.0, value=58.0, step=0.1)
-                f_high = st.number_input("🩺 最高血圧", min_value=80, max_value=220, value=120)
-            with fc3:
-                f_low = st.number_input("🩺 最低血圧", min_value=40, max_value=140, value=80)
-                f_emotion = st.selectbox("😊 ご表情", ["◎ 笑顔が多い", "○ 穏やか", "△ やや傾眠", "× 不安気"])
-
-            f_comment = st.text_area("💬 申し送り事項・特記事項", "午前中は日差しを浴びながらお庭を散歩されました。食欲旺盛です。")
-
-            if st.form_submit_button("💾 申し送り＆バイタルを保存（ご家族へ即時共有）"):
-                try:
-                    add_health_record(target_senior, today_str, f_weight, f_high, f_low, f_water, 1, 90)
-                    log_content = f"食事:{f_meal} | 水分:{f_water}ml | 気分:{f_emotion} | コメント:{f_comment}"
-                    add_family_log(target_senior, "施設職員", "日報申送り", log_content)
-                    st.success(f"✅ {target_senior} 様のバイタルを保存完了しました！")
-                except Exception as e:
-                    st.error(f"保存エラー: {e}")
-        st.divider()
-
-    elif "家族" in st.session_state.user_role:
-        st.subheader("📈 【ご家族用】健康データレポート発行")
-        if st.button("📄 今月の健康データ（PDF）を発行ダウンロード"):
-            try:
-                h_report_pdf = create_health_report(st.session_state.senior_fullname)
-                st.download_button("📥 レポートPDFを保存", data=h_report_pdf, file_name=f"health_report_{today_str}.pdf")
-            except Exception:
-                st.success("月間健康PDFレポートの生成が完了しました！")
-        st.divider()
-
-    # =========================================================================
-    # 💧 【ホームから移植】今日の水分記録セクション
-    # =========================================================================
-    st.subheader(f"💧 今日の水分記録（現在: {st.session_state.water_today} ml / 目標 1500ml）")
-    
-    # 水分目標のプログレスバー
-    water_ratio = min(1.0, float(st.session_state.water_today) / 1500.0)
-    st.progress(water_ratio)
-    
-    # ワンタップ記録ボタン（4列配置）
-    w_col1, w_col2, w_col3, w_col4 = st.columns(4)
-    with w_col1:
-        if st.button("🥛 お水 1杯\n(+200ml)", use_container_width=True):
-            add_water_amount(200)
-            st.toast("お水を200ml記録しました！")
-            st.rerun()
-    with w_col2:
-        if st.button("🍵 お茶/コーヒー\n(+150ml)", use_container_width=True):
-            add_water_amount(150)
-            st.toast("お茶/コーヒーを150ml記録しました！")
-            st.rerun()
-    with w_col3:
-        if st.button("🍲 お味噌汁 1杯\n(+150ml)", use_container_width=True):
-            add_water_amount(150)
-            st.toast("お味噌汁を150ml記録しました！")
-            st.rerun()
-    with w_col4:
-        if st.button("🥛 ペットボトル\n(+500ml)", use_container_width=True):
-            add_water_amount(500)
-            st.toast("ペットボトル500mlを記録しました！")
-            st.rerun()
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # =========================================================================
-    # 📝 本日の健康バイタル（体重・血圧・水分確定）入力フォーム
-    # =========================================================================
-    with st.expander("📝 本日の健康バイタル（体重・血圧）を入力・確定保存する", expanded=True):
-        with st.form("health_input_form"):
-            hc1, hc2, hc3, hc4 = st.columns(4)
-            with hc1:
-                in_weight = st.number_input("体重 (kg)", min_value=30.0, max_value=150.0, value=float(st.session_state.senior_weight), step=0.1)
-            with hc2:
-                in_high = st.number_input("最高血圧 (mmHg)", min_value=80, max_value=220, value=120)
-            with hc3:
-                in_low = st.number_input("最低血圧 (mmHg)", min_value=40, max_value=140, value=80)
-            with hc4:
-                # ワンタップで蓄積された水分量が初期値として反映され、手動微調整も可能に
-                in_water = st.number_input("本日の水分量 (ml)", min_value=0, max_value=5000, value=int(st.session_state.water_today), step=50)
+                # -------------------------------------------------------------------
+                # 1. ➕ 新しい思い出レシピ・リクエストの投稿フォーム
+                # -------------------------------------------------------------------
+                with st.expander("➕ 新しい思い出レシピ・食べたい料理を投稿する", expanded=False):
+                    r_title = st.text_input("🍳 料理名・思い出の味タイトル", "母の特製 具だくさん肉じゃが")
+                    uploaded_r_photo = st.file_uploader("📸 料理の写真を選択（任意）", type=["jpg", "png", "jpeg"], key="recipe_photo_uploader")
+                    r_story = st.text_area("💬 この料理にまつわる思い出・こだわりポイント", "隠し味に少し甘めの醤油を使っていて、じゃがいもがホクホクで美味しかった思い出の味です。")
             
-            if st.form_submit_button("💾 本日の記録を保存"):
-                try:
-                    add_health_record(
-                        st.session_state.senior_fullname,
-                        today_str,
-                        float(in_weight),
-                        int(in_high),
-                        int(in_low),
-                        int(in_water),
-                        1,
-                        90
-                    )
-                    st.session_state.senior_weight = float(in_weight)
-                    st.session_state.water_today = int(in_water) # セッション情報も更新
-                    st.success("✅ 本日のバイタル（体重・血圧・水分量）をデータベースへ登録しました！")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"保存エラー: {e}")
+                    if st.button("🍳 思い出レシピを掲示板へ投稿する", width="stretch"):
+                        if not r_title.strip():
+                            st.warning("料理名を入力してください。")
+                        else:
+                            try:
+                                saved_r_img_path = save_uploaded_photo(uploaded_r_photo) if uploaded_r_photo is not None else ""
 
-    st.divider()
-
-    # --- 以下、健康変化推移チャート（既存の処理） ---
-    st.subheader("📈 健康変化推移チャート（水分・体重・血圧）")
-    period_mode = st.radio("表示期間の切替", ["📅 過去7日間（週間）", "🗓️ 過去30日間（月間）"], horizontal=True)
-    days_limit = 7 if "7日" in period_mode else 30
-    
-    try:
-        raw_h_records = get_health_records(st.session_state.senior_fullname)
-        if raw_h_records and len(raw_h_records) > 0:
-            chart_data = []
-            for r in raw_h_records[:days_limit]:
-                w_val = int(r[4]) if len(r) > 4 and r[4] is not None else 0
-                chart_data.append({
-                    "日付": str(r[0]),
-                    "体重(kg)": float(r[1]),
-                    "最高血圧": int(r[2]),
-                    "最低血圧": int(r[3]),
-                    "水分量(ml)": w_val
-                })
-            df_chart = pd.DataFrame(chart_data).sort_values("日付", ascending=True).reset_index(drop=True)
-            
-            c_tab1, c_tab2, c_tab3 = st.tabs(["💧 水分摂取量(ml)", "⚖️ 体重推移(kg)", "🩺 血圧推移(mmHg)"])
-            with c_tab1:
-                st.line_chart(df_chart, x="日付", y="水分量(ml)")
-            with c_tab2:
-                st.line_chart(df_chart, x="日付", y="体重(kg)")
-            with c_tab3:
-                st.line_chart(df_chart, x="日付", y=["最高血圧", "最低血圧"])
-        else:
-            dates = [(date.today() - timedelta(days=i)).strftime("%m/%d") for i in range(days_limit)][::-1]
-            dummy_df = pd.DataFrame({
-                "日付": dates,
-                "水分量(ml)": [800, 1000, 1200, 950, 1100, 1300, int(st.session_state.water_today)] if days_limit==7 else [1000]*30,
-                "体重(kg)": [float(st.session_state.senior_weight)]*days_limit,
-                "最高血圧": [122, 125, 118, 120, 124, 121, 120] if days_limit==7 else [120]*30
-            })
-            c_tab1, c_tab2, c_tab3 = st.tabs(["💧 水分摂取量(ml)", "⚖️ 体重推移(kg)", "🩺 血圧推移(mmHg)"])
-            with c_tab1:
-                st.line_chart(dummy_df, x="日付", y="水分量(ml)")
-            with c_tab2:
-                st.line_chart(dummy_df, x="日付", y="体重(kg)")
-            with c_tab3:
-                st.line_chart(dummy_df, x="日付", y="最高血圧")
-    except Exception as e:
-        st.error(f"グラフ作成エラー: {e}")
-
-    try:
-        health_record(st.session_state.senior_fullname)
-    except Exception: pass
-
-# -------------------------------------------------------------------
-# ページ 4: 👥 交流・思い出
-# -------------------------------------------------------------------
-elif page == "👥 交流・思い出":
-    st.header("👥 交流 ＆ 家族伝言板・思い出SNSアルバム")
-
-    if "家族" in st.session_state.user_role:
-        st.subheader("💬 ご本人・施設スタッフへ温かい家族メッセージを送る")
-        with st.form("send_family_msg_form_comm"):
-            msg_sender = st.text_input("差出人名（例: 娘の美咲より）", value="ご家族より")
-            msg_content = st.text_area("応援・感謝メッセージを入力してください", "お父さん、今日もお散歩頑張ってね！週末遊びに行きます。")
-            if st.form_submit_button("💌 メッセージを送信"):
-                try:
-                    add_family_comment(st.session_state.linked_senior_name, msg_sender, msg_content)
-                    st.success("✅ メッセージを送信しました！ご本人の端末へ即時表示されます。")
-                except Exception as e:
-                    st.error(f"送信エラー: {e}")
-
-        st.subheader("📜 家族伝言板メッセージ履歴")
-        try:
-            comments = get_family_comments(st.session_state.linked_senior_name)
-            if comments:
-                for c in comments:
-                    st.success(f"💌 **{c.get('sender', 'ご家族')}** ({c.get('created_at', today_str)})\n\n{c.get('comment')}")
-        except Exception: pass
-        st.divider()
-
-    try:
-        my_comments = get_family_comments(st.session_state.senior_fullname)
-        if my_comments:
-            st.subheader("💌 ご家族から届いた温かいメッセージ")
-            for mc in my_comments[:3]:
-                st.success(f"💌 **{mc.get('sender', 'ご家族より')}**: {mc.get('comment')}")
-            st.divider()
-    except Exception: pass
-
-    st.markdown('<div class="brain-box">', unsafe_allow_html=True)
-    st.subheader("🎵 昭和の名曲・歌詞回想クイズ")
-    st.write("Q. 『川の流れのように』を歌った有名な昭和の歌手はどなたでしょう？")
-    q_ans = st.radio("答えを選択してください", ["坂本 九 さん", "美空 ひばり さん", "石原 裕次郎 さん"])
-    if st.button("答え合わせする"):
-        if q_ans == "美空 ひばり さん":
-            st.success("🎉 正解です！『川の流れのように』は美空ひばりさんの不朽の名曲ですね。元気pt +5!")
-            update_point(st.session_state.senior_fullname, 5)
-            st.session_state.genki_point += 5
-        else:
-            st.info("惜しい！正解は『美空 ひばり さん』でした。")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.subheader("☀ 今日の会話のきっかけカード")
-    tc1, tc2 = st.columns(2)
-    with tc1:
-        st.markdown("""<div class="topic-card">📻 <b>昭和の思い出会話カード</b><br><br><b>Q. 20代の頃、一番好きだった歌手や曲は誰ですか？</b><br>🎵 美空ひばりさん<br>🎵 石原裕次郎さん</div>""", unsafe_allow_html=True)
-    with tc2:
-        st.markdown("""<div class="topic-card">🍚 <b>食べ物の思い出会話カード</b><br><br><b>Q. 子どもの頃のお祝い料理は何でしたか？</b><br>🍣 お寿司・手巻き寿司<br>赤飯・お頭付きの魚</div>""", unsafe_allow_html=True)
-
-    st.divider()
-
-    st.subheader("📸 写真SNSアルバム（漏洩防止フォルダ分離対応）")
-    with st.expander("➕ 新しい投稿・思い出写真を投稿する", expanded=False):
-        p_title = st.text_input("投稿タイトル", "孫との楽しい休日")
-        uploaded_photo = st.file_uploader("📸 写真を選択（任意）", type=["jpg", "png", "jpeg"])
-        p_privacy = st.selectbox("🔒 公開範囲を選択", ["🌐 全体公開（コミュニティみんなへ）", "🏢 施設内のみ（スタッフ・入所者へ）", "🔒 家族のみ（ご家族スマホ限定）"])
-        p_memo = st.text_area("💬 コメント・思い出メッセージ", "元気に過ごしました！")
-        
-        if st.button("思い出アルバムに投稿＆共有"):
-            try:
-                saved_img_path = ""
-                if uploaded_photo is not None:
-                    target_dir = UPLOAD_STUDENT_DIR if "学生" in st.session_state.user_role else UPLOAD_SENIOR_DIR
-                    saved_img_path = os.path.join(target_dir, uploaded_photo.name)
-                    with open(saved_img_path, "wb") as f:
-                        f.write(uploaded_photo.getbuffer())
-
-                msg_text = f"[{p_privacy}] 【{p_title}】 {p_memo}"
-                add_post(st.session_state.senior_fullname, msg_text, saved_img_path)
-                st.success(f"📸 投稿を独立フォルダ（{target_dir}）へ安全に保存し共有しました！")
-                st.rerun()
-            except Exception as e:
-                st.error(f"投稿エラー: {e}")
-
-    comm_tab1, comm_tab2,  = st.tabs(["🌐 みんなの交流", "🏥 同じ持病（疾患）の仲間コミュニティ"])
-
-    # --- タブ1: 全体タイムライン ---
-    with comm_tab1:
-        st.subheader("📰 全体の交流タイムライン")
-        try:
-            posts = get_posts()
-            if posts:
-                for p in posts[:10]:
-                    p_author = p[1] if isinstance(p, tuple) else p.get("username", "ご利用者")
-                    p_msg = p[2] if isinstance(p, tuple) else p.get("message", "")
-                    p_img = p[3] if isinstance(p, tuple) else p.get("image_path", "")
-                    p_time = p[7] if isinstance(p, tuple) else p.get("created_at", "")
-                    p_likes = p[8] if isinstance(p, tuple) else p.get("likes", 0)
-                    p_id = p[0] if isinstance(p, tuple) else p.get("id")
-                    
-                    with st.container():
-                        st.markdown(f"👤 **{p_author}** 様 &nbsp;&nbsp; <small style='color:gray;'>{p_time}</small>", unsafe_allow_html=True)
-                        st.write(p_msg)
-                        if p_img and os.path.exists(p_img):
-                            st.image(p_img, width=320)
+                                msg_text = f"【🍳 思い出レシピ】 『{r_title}』\n\n{r_story}"
                         
-                        col_lk, col_del = st.columns([4, 1])
-                        with col_lk:
-                            if st.button(f"👍 いいね ({p_likes})", key=f"t1_like_{p_id}"):
-                                add_like(p_id, st.session_state.senior_fullname)
+                                add_post(st.session_state.senior_fullname, msg_text, saved_r_img_path)
+                        
+                                if "add_stamp" in globals():
+                                    add_stamp("レシピ投稿")
+                                if "trigger_action" in globals():
+                                    trigger_action(sound=True, speak_text="思い出のレシピを投稿しました！")
+                            
+                                st.success("🎉 思い出レシピをタイムラインへ投稿しました！")
                                 st.rerun()
-                        with col_del:
-                            if p_author == st.session_state.senior_fullname or "施設" in st.session_state.user_role:
-                                if st.button("🗑️ 削除", key=f"t1_del_{p_id}"):
-                                    delete_post(p_id)
-                                    st.rerun()
-                        st.divider()
-        except Exception as e:
-            st.error(f"取得エラー: {e}")
+                            except Exception as e:
+                                st.error(f"投稿エラー: {e}")
 
-    # --- タブ2: 🏥 同じ持病（疾患）同士の仲間コミュニティ（新機能） ---
-    with comm_tab2:
-        my_disease = st.session_state.get("senior_disease", "なし")
-        st.subheader(f"🏥 同病種・持病別コミュニティ")
-        
-        disease_options = ["高血圧", "糖尿病", "腎臓病", "脂質異常症", "骨粗しょう症", "認知症予防", "フレイル予防", "なし"]
-        default_idx = disease_options.index(my_disease) if my_disease in disease_options else 0
-        
-        filter_disease = st.selectbox(
-            "絞り込む持病・疾患を選択してください",
-            disease_options,
-            index=default_idx,
-            key="comm_disease_filter_select"
-        )
-        
-        st.info(f"💡 **「{filter_disease}」** に関する食事の工夫・減塩テクニック・日々の体験談を共有しましょう。")
-        
-        # フォームに写真添付機能を追加
-        with st.form("disease_post_form"):
-            d_msg = st.text_area(f"[{filter_disease}仲間へ] メッセージや工夫を入力", placeholder="減塩でも出汁を利かせると美味しく食べられました！皆様のおすすめレシピはありますか？")
-            uploaded_d_photo = st.file_uploader("📸 写真を添える（任意）", type=["jpg", "png", "jpeg"], key="disease_photo_uploader")
-            
-            if st.form_submit_button("💬 このコミュニティへ投稿"):
-                if not d_msg.strip() and uploaded_d_photo is None:
-                    st.warning("メッセージまたは写真を選択してください。")
-                else:
-                    try:
-                        saved_d_img_path = ""
-                        if uploaded_d_photo is not None:
-                            target_dir = UPLOAD_STUDENT_DIR if "学生" in st.session_state.get("user_role", "") else UPLOAD_SENIOR_DIR
-                            if not os.path.exists(target_dir):
-                                os.makedirs(target_dir, exist_ok=True)
-                            
-                            saved_d_img_path = os.path.join(target_dir, f"disease_{uploaded_d_photo.name}")
-                            with open(saved_d_img_path, "wb") as f:
-                                f.write(uploaded_d_photo.getbuffer())
+                st.divider()
 
-                        full_post_msg = f"[{filter_disease}コミュニティ] {d_msg}"
-                        add_post(st.session_state.senior_fullname, full_post_msg, saved_d_img_path)
-                        st.success("コミュニティへ写真付きメッセージを投稿しました！")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"投稿エラー: {e}")
+                # -------------------------------------------------------------------
+                # 2. 📰 みんなの思い出レシピタイムライン（閲覧・投票・削除機能）
+                # -------------------------------------------------------------------
+                st.subheader("📰 みんなの思い出レシピ＆リクエスト一覧")
+                try:
+                    posts = get_posts()
+                    recipe_posts = []
 
-        st.divider()
-        st.markdown(f"##### 📜 「{filter_disease}」に関する投稿一覧")
-        try:
-            posts = get_posts()
-            found = False
-            if posts:
-                for idx, p in enumerate(posts):
-                    # タプル形式・辞書形式の双方に対応
-                    if isinstance(p, tuple):
-                        p_id = p[0]
-                        p_author = p[1]
-                        p_msg = p[2] if len(p) > 2 else ""
-                        p_img = p[3] if len(p) > 3 else ""
-                        p_time = p[7] if len(p) > 7 else ""
-                    else:
-                        p_id = p.get("id")
-                        p_author = p.get("username", "ご利用者")
-                        p_msg = p.get("message", "")
-                        p_img = p.get("image_path", "")
-                        p_time = p.get("created_at", "")
+                    if posts:
+                        for p in posts:
+                            p_msg = p[2] if isinstance(p, tuple) and len(p) > 2 else p.get("message", "") if isinstance(p, dict) else ""
+                            if "【🍳 思い出レシピ】" in p_msg or "レシピ" in p_msg:
+                                recipe_posts.append(p)
 
-                    if f"[{filter_disease}コミュニティ]" in p_msg or filter_disease in p_msg:
-                        found = True
-                        clean_msg = p_msg.replace(f'[{filter_disease}コミュニティ]', '').strip()
+                    if recipe_posts:
+                        for idx, p in enumerate(recipe_posts[:10]):
+                            if isinstance(p, tuple):
+                                p_id = p[0]
+                                p_author = p[1]
+                                p_msg = p[2] if len(p) > 2 else ""
+                                p_img = p[3] if len(p) > 3 else ""
+                                p_time = p[7] if len(p) > 7 else ""
+                                p_likes = p[8] if len(p) > 8 else 0
+                            else:
+                                p_id = p.get("id")
+                                p_author = p.get("username", "ご利用者")
+                                p_msg = p.get("message", "")
+                                p_img = p.get("image_path", "")
+                                p_time = p.get("created_at", "")
+                                p_likes = p.get("likes", 0)
+
+                            with st.container():
+                                st.markdown(f"👤 **{escape(str(p_author))}** 様の思い出の味 &nbsp;&nbsp; <small style='color:gray;'>{p_time}</small>", unsafe_allow_html=True)
+                                st.write(f"{p_msg}")
                         
-                        with st.container():
-                            st.markdown(f"👤 **{p_author}** 様 &nbsp;&nbsp; <small style='color:gray;'>{p_time}</small>", unsafe_allow_html=True)
-                            
-                            if clean_msg:
-                                st.write(clean_msg)
-                            
-                            # 📸 添付写真の表示
-                            if p_img and os.path.exists(p_img):
-                                st.image(p_img, width=320, caption="投稿写真")
-                            
-                            # 🗑️ 投稿削除機能（本人・施設職員・管理者が削除可能）
-                            if (p_author == st.session_state.senior_fullname or 
-                                "施設" in st.session_state.get("user_role", "") or 
-                                "システム管理者" in st.session_state.get("user_role", "")):
-                                
-                                if st.button("🗑️ 投稿を削除", key=f"dis_del_{p_id}_{idx}"):
-                                    delete_post(p_id)
-                                    st.toast("コミュニティの投稿を削除しました。")
-                                    st.rerun()
-                            
-                            st.divider()
+                                if p_img and os.path.exists(p_img):
+                                    st.image(p_img, width=320, caption="思い出の料理写真")
+                        
+                                col_lk1, col_del = st.columns([4, 2])
+                                with col_lk1:
+                                    # idxを付与してキーの絶対重複を回避
+                                    if st.button(f"😋 食べたい！ ({p_likes})", key=f"rec_like_{p_id}_{idx}"):
+                                        add_like(p_id, st.session_state.senior_fullname)
+                                        if "trigger_action" in globals():
+                                            trigger_action(sound=True, speak_text="食べたい！を投票しました。")
+                                        st.rerun()
+                        
+                                # 🗑️ 投稿削除ボタン
+                                with col_del:
+                                    if (p_author == st.session_state.senior_fullname or
+                                        "施設" in st.session_state.get("user_role", "") or
+                                        "システム管理者" in st.session_state.get("user_role", "")):
+                                        if st.button("🗑️ 投稿を削除", key=f"rec_del_{p_id}_{idx}"):
+                                            delete_post(p_id)
+                                            st.toast("投稿を削除しました。")
+                                            st.rerun()
+                                st.divider()
+                    else:
+                        st.info("💡 まだ思い出レシピの投稿がありません。最初の思い出の味を投稿してみましょう！")
+                except Exception as e:
+                    st.error(f"レシピタイムライン取得エラー: {e}")
+        
 
-            if not found:
-                st.caption("まだこの疾患に関する投稿はありません。最初のメッセージや写真を投稿してみましょう！")
-        except Exception as e:
-            st.error(f"読み込みエラー: {e}")
+        if meal_section == "冷蔵庫検索":
+            st.subheader("🥗 冷蔵庫のあまりもの検索 ＆ 苦手食材フィルター")
+            st.caption("今ある食材と苦手な食材を選択すると、AIが最適なレシピ候補を自動検索します。")
 
-# -------------------------------------------------------------------
-# ページ 5: ⚙️ 設定（パスワード保護機能 ＆ セキュリティ強化型）
-# -------------------------------------------------------------------
-elif page == "⚙️ 設定":
-    st.header("⚙️ システム設定・ご家族連携設定")
+            # 1. 選択肢とする食材一覧の標準マスター（36種類に大幅拡張）
+            ALL_INGREDIENTS = [
+                # 肉類
+                "鶏肉", "鶏むね肉", "鶏もも肉", "鶏ささみ", "鶏ひき肉", "豚肉", "豚薄切り肉", "豚コマ肉", "牛肉", "合挽き肉",
+                # 魚介類
+                "生鮭", "鮭", "真鯖", "さば", "さんま", "あじ", "さわら", "ブリ切り身", "ブリ", "たら切り身", "たら", "白身魚", "生魚切り身", "ツナ缶",
+                # 野菜・きのこ類
+                "キャベツ", "春キャベツ", "レタス", "トマト", "きゅうり", "大根", "大根おろし", "人参", "玉ねぎ", "新玉ねぎ", "長ねぎ",
+                "白菜", "ほうれん草", "小松菜", "ごぼう", "れんこん", "じゃがいも", "アスパラガス", "菜の花", "たけのこ", "水菜",
+                "ピーマン", "ナス", "オクラ", "もやし", "こんにゃく", "しめじ", "椎茸", "まいたけ", "エリンギ",
+                # 豆腐・大豆・卵・海藻
+                "豆腐", "厚揚げ", "油揚げ", "納豆", "高野豆腐", "おから", "卵", "ひじき", "わかめ", "昆布",
+                # 主食・果物・乳製品
+                "うどん", "マカロニ", "パン", "バナナ", "いちご", "りんご", "柿", "梨", "桃", "みかん", "プレーンヨーグルト", "牛乳"
+            ]
 
-    st.subheader("👤 プロフィール情報編集")
-    with st.form("edit_profile_form"):
-        p_name = st.text_input("お名前（フルネーム）", value=st.session_state.senior_fullname)
-        u_facility = st.text_input("🏥 所属施設・事業所名", value=st.session_state.facility_name)
-        c_p1, c_p2 = st.columns(2)
-        with c_p1:
-            p_age = st.number_input("年齢", min_value=18, max_value=120, value=int(st.session_state.senior_age))
-            p_height = st.number_input("身長(cm)", min_value=120.0, max_value=200.0, value=float(st.session_state.senior_height), step=0.5)
-            p_disease = st.selectbox("持病・配慮事項", ["なし", "高血圧", "糖尿病", "腎臓病", "脂質異常症", "認知症予防", "フレイル予防"])
-        with c_p2:
-            p_bdate = st.date_input("生年月日", value=st.session_state.senior_birthdate, min_value=date(1900, 1, 1), max_value=date.today())
-            p_weight = st.number_input("体重(kg)", min_value=30.0, max_value=150.0, value=float(st.session_state.senior_weight), step=0.5)
-            gender_options = ["男性", "女性", "未回答"]
-            current_gender = st.session_state.get("senior_gender", "未回答")
-            gender_idx = gender_options.index(current_gender) if current_gender in gender_options else 2
+            # 2. 食材入力エリア（2列配置）
+            col_fridge, col_dislike = st.columns(2)
+
+            with col_fridge:
+                st.markdown("##### 🛒 今ある食材を選択（複数選択可）")
+                st.caption("💡 1文字入力すると食材名を検索・絞り込みできます")
+                fridge_items = st.multiselect(
+                    "冷蔵庫にある食材",
+                    ALL_INGREDIENTS,
+                    default=[],
+                    key="tab4_fridge_select",
+                    placeholder="文字を入力して検索..."
+                )
+
+            with col_dislike:
+                st.markdown("##### 🚫 苦手・避けたい食材を選択（選択式フィルター）")
+                st.caption("💡 1文字入力すると食材名を検索・絞り込みできます")
+                # セッションに保存されている苦手食材を初期値として反映
+                default_dislikes = [item for item in st.session_state.get("dislike_foods", []) if item in ALL_INGREDIENTS]
             
-            p_gender = st.radio("性別", gender_options, index=gender_idx, horizontal=True)
+                selected_dislikes = st.multiselect(
+                    "除外したい食材",
+                    ALL_INGREDIENTS,
+                    default=default_dislikes,
+                    key="tab4_dislike_select",
+                    placeholder="文字を入力して検索..."
+                )
+                # 選択された苦手食材をセッション状態にも同期更新
+                st.session_state.dislike_foods = selected_dislikes
 
-        if st.form_submit_button("💾 プロフィール情報を更新"):
-            st.session_state.senior_fullname = p_name
-            st.session_state.facility_name = u_facility
-            st.session_state.senior_age = int(p_age)
-            st.session_state.senior_height = float(p_height)
-            st.session_state.senior_weight = float(p_weight)
-            st.session_state.senior_disease = p_disease
-            st.session_state.senior_birthdate = p_bdate
-            st.session_state.senior_gender = p_gender
-            st.toast("プロフィール情報を更新しました！", icon="✅")
-            st.rerun()
+            st.markdown("<br>", unsafe_allow_html=True)
 
-    st.divider()
+            # 3. レシピ検索実行
+            if st.button("🤖 この食材からレシピを提案・検索", width="stretch"):
+                if fridge_items:
+                    try:
+                        # fridge_recipeモジュールの呼び出し
+                        candidates = recommend_from_fridge(
+                            fridge_items,
+                            int(st.session_state.senior_age),
+                            st.session_state.senior_disease,
+                            need_calorie
+                        )
+                    
+                        if candidates:
+                            # 苦手食材フィルターの適用（苦手食材が朝・昼・夕のメニューに含まれていれば除外）
+                            filtered_candidates = []
+                            for score, rate, lack, row in candidates:
+                                meal_text = f"{row.get('breakfast', '')} {row.get('lunch', '')} {row.get('dinner', '')}"
+                            
+                                # 苦手食材が含まれているかチェック
+                                has_dislike = any(dislike_item in meal_text for dislike_item in selected_dislikes)
+                                if not has_dislike:
+                                    filtered_candidates.append((score, rate, lack, row))
 
-    # 🔒 安全なご家族連携コード設定エリア（一元管理 ＆ 伏字保護）
-    st.subheader("🔐 ご家族連携コード・接続設定")
-    st.caption("ご家族や施設職員があなたの健康状態や作成した献立を確認するための安全な連携設定です。")
+                            if filtered_candidates:
+                                st.success(f"🎉 条件に合うおすすめの献立候補が {len(filtered_candidates[:3])} 件見つかりました！")
+                            
+                                for score, rate, lack, row in filtered_candidates[:3]:
+                                    photo_for(row.get("dinner"), "夕食")
+                                    st.info(
+                                        f"💡 **手持ち食材一致率: {rate}%** (一致数: {score} 個)\n\n"
+                                        f"🌅 **朝食**: {row.get('breakfast')}\n\n"
+                                        f"🌞 **昼食**: {row.get('lunch')}\n\n"
+                                        f"🌙 **夕食**: {row.get('dinner')}\n\n"
+                                        f"🛒 **不足している買い足し食材**: {', '.join(lack) if lack else '✨ なし（今ある食材だけで作れます！）'}"
+                                    )
+                            else:
+                                st.warning("⚠️ 苦手食材フィルターによりすべての候補が除外されました。苦手食材の指定を緩めて再試行してください。")
+                        else:
+                            st.warning("選択した食材に合うレシピ候補が見つかりませんでした。食材を増やして再検索してみてください。")
+                    except Exception as e:
+                        st.error(f"検索処理エラー: {e}")
+                else:
+                    st.warning("冷蔵庫にある食材を1つ以上選択してください。")
 
-    col_code_show, col_code_btn = st.columns([3, 1])
-    with col_code_show:
-        # デフォルトは非表示(••••••)でチラ見防止
-        show_code = st.checkbox("👁️ 連携コードを表示する", value=False)
-        real_code = st.session_state.user_code if st.session_state.user_code else "未発行"
-        display_code = real_code if show_code else "••••••"
-        st.info(f"🔑 **あなたの連携コード**: `{display_code}`")
+        # -------------------------------------------------------------------
+        # ⭐ 5. お気に入り献立一覧タブ（日替わり＆1週間分の閲覧・削除機能）
+        # -------------------------------------------------------------------
+        if meal_section == "お気に入り":
+            st.subheader("⭐ 保存したお気に入り献立一覧")
+            render_dinner_favorites()
+        
+            # サブタブで1日分と1週間分を整理
+            favorite_view = st.segmented_control("保存の種類", ["1日分", "1週間分"], default="1日分", required=True)
+        
+            # --- 1日分の献立 ---
+            if favorite_view == "1日分":
+                st.markdown("##### 🍚 保存した1日分の献立")
+                if st.session_state.fav_daily_menus:
+                    for idx, f_menu in enumerate(st.session_state.fav_daily_menus):
+                        with st.expander(f"⭐ お気に入り {idx+1} （推定: {f_menu.get('カロリー', need_calorie)} kcal）", expanded=(idx == 0)):
+                            col_f1, col_f2, col_f3 = st.columns(3)
+                            with col_f1:
+                                st.write(f"🌅 **朝食**: {f_menu.get('朝食', '-')}")
+                            with col_f2:
+                                st.write(f"🌞 **昼食**: {f_menu.get('昼食', '-')}")
+                            with col_f3:
+                                st.write(f"🌙 **夕食**: {f_menu.get('夕食', '-')}")
+                        
+                            st.caption(f"💡 **AIのおすすめ**: {f_menu.get('バランス', '栄養バランス良好')}")
+                        
+                            # 削除機能
+                            if st.button("🗑️ このお気に入りを削除", key=f"del_fav_daily_{idx}"):
+                                st.session_state.fav_daily_menus.pop(idx)
+                                st.toast("お気に入りを削除しました。")
+                                st.rerun()
+                else:
+                    st.info("💡 まだ1日分のお気に入り献立がありません。「本日の最適献立」タブから保存してみましょう！")
 
-    with st.expander("🔗 ご家族・施設端末と接続（照会入力）", expanded=False):
-        col_auth1, col_auth2, col_auth3 = st.columns(3)
-        with col_auth1:
-            input_code = st.text_input("🔑 6桁連携コード", value=st.session_state.linked_senior_code)
-        with col_auth2:
-            input_surname = st.text_input("👤 対象者の『名字』", value=st.session_state.senior_surname)
-        with col_auth3:
-            input_bdate = st.date_input("🎂 対象者の生年月日", value=st.session_state.senior_birthdate, min_value=date(1900, 1, 1), max_value=date.today())
+            # --- 1週間分の献立 ---
+            if favorite_view == "1週間分":
+                st.markdown("##### 📅 保存した1週間分の献立セット")
+                if st.session_state.fav_weekly_menus:
+                    for idx, w_set in enumerate(st.session_state.fav_weekly_menus):
+                        with st.expander(f"⭐ 1週間献立セット {idx+1}", expanded=(idx == 0)):
+                            if isinstance(w_set, dict):
+                                for day_k, day_v in w_set.items():
+                                    st.write(f"**【{day_k}】** 朝: {day_v.get('朝食')} | 昼: {day_v.get('昼食')} | 夕: {day_v.get('夕食')}")
+                            elif isinstance(w_set, list):
+                                for day_item in w_set:
+                                    st.write(f"**【{day_item.get('曜日', 'Day')}】** 朝: {day_item.get('朝食')} | 昼: {day_item.get('昼食')} | 夕: {day_item.get('夕食')}")
+                        
+                            # 削除機能
+                            if st.button("🗑️ この1週間セットを削除", key=f"del_fav_weekly_{idx}"):
+                                st.session_state.fav_weekly_menus.pop(idx)
+                                st.toast("1週間お気に入りセットを削除しました。")
+                                st.rerun()
+                else:
+                    st.info("💡 まだ1週間のお気に入り献立セットがありません。「1週間献立＆買い物リスト」タブから保存してみましょう！")
 
-        if st.button("コード照会で安全接続"):
-            if input_code and input_surname:
-                st.session_state.linked_senior_code = input_code
-                st.session_state.linked_senior_name = input_surname
-                st.session_state.family_authenticated = True
-                st.success(f"🟢 **【認証成功】** 『{input_surname}』様の端末・データと安全接続しました！")
-            else:
-                st.error("❌ 連携コードと名字を入力してください。")
+    # -------------------------------------------------------------------
+    # ページ 3: 🩺 健康記録
+    # -------------------------------------------------------------------
+    elif page == "🩺 健康記録":
+        st.header("健康記録")
 
-    # 👨‍👩‍👧 家族・施設から「本人が作成したリアルタイム献立」を参照する機能
-    if "家族" in st.session_state.user_role or "施設" in st.session_state.user_role:
+        if "施設" in st.session_state.user_role:
+            st.subheader("📝 【施設職員用】申し送り＆バイタル入力・カルテ照会")
+            seniors_list = get_all_seniors()
+            s_names = [s[1] if isinstance(s, tuple) else s.get("name") for s in seniors_list] if seniors_list else [st.session_state.senior_fullname]
+            target_senior = st.selectbox("記録・カルテ対象者選択", s_names)
+        
+            u_info = get_user(target_senior)
+            if u_info:
+                if isinstance(u_info, dict):
+                    s_age = u_info.get('age', 75)
+                    s_dis = u_info.get('disease', '高血圧')
+                elif isinstance(u_info, tuple):
+                    s_age = u_info[2] if len(u_info) > 2 else 75
+                    s_dis = u_info[6] if len(u_info) > 6 else '高血圧'
+                st.info(f"👤 **カルテ要約**: {target_senior} 様（{s_age}歳） | 持病: {s_dis}")
+
+            with st.form("facility_health_input_form"):
+                fc1, fc2, fc3 = st.columns(3)
+                with fc1:
+                    f_meal = st.selectbox("🍚 食事の様子", ["◎ 完食", "○ 8割摂取", "△ 半分摂取", "× 食欲不振"])
+                    f_water = st.number_input("💧 水分摂取量 (ml)", min_value=0, max_value=5000, value=None, step=50)
+                with fc2:
+                    f_weight = st.number_input("秤 体重 (kg)", min_value=0.0, value=None, step=0.1)
+                    f_high = st.number_input("🩺 最高血圧", min_value=1, value=None)
+                with fc3:
+                    f_low = st.number_input("🩺 最低血圧", min_value=1, value=None)
+                    f_emotion = st.selectbox("😊 ご表情", ["◎ 笑顔が多い", "○ 穏やか", "△ やや傾眠", "× 不安気"])
+
+                f_comment = st.text_area("申し送り事項・特記事項", placeholder="確認した内容を入力")
+
+                if st.form_submit_button("申し送りと測定値を保存"):
+                    try:
+                        if any(value is not None for value in (f_weight, f_high, f_low, f_water)):
+                            add_health_record(target_senior, today_str, f_weight, f_high, f_low, f_water, 0, None)
+                        water_label = f"{f_water}mL" if f_water is not None else "未記録"
+                        log_content = f"食事:{f_meal} | 水分:{water_label} | 気分:{f_emotion} | コメント:{f_comment}"
+                        add_family_log(target_senior, "施設職員", "日報申送り", log_content)
+                        st.success(f"✅ {target_senior} 様のバイタルを保存完了しました！")
+                    except Exception as e:
+                        st.error(f"保存エラー: {e}")
+            st.divider()
+
+        render_measurements()
+        if accounts_configured and st.session_state.user_id:
+            history = get_health_records(st.session_state.user_id)
+            if history:
+                with st.expander("以前の版で保存した記録"):
+                    st.caption("以前の版の保存データです。今回の測定値グラフとは別に表示しています。")
+                    old_chart = pd.DataFrame(history, columns=["日付", "体重", "上の血圧", "下の血圧", "水分", "旧版のスコア"])
+                    st.dataframe(old_chart.drop(columns=["旧版のスコア"]), hide_index=True)
+
+    # -------------------------------------------------------------------
+    # ページ 4: 👥 交流・思い出
+    # -------------------------------------------------------------------
+    elif page == "👥 交流・思い出":
+        st.header("👥 交流 ＆ 家族伝言板・思い出SNSアルバム")
+
+        render_shared()
+        render_messages()
         st.divider()
-        st.subheader(f"🍱 『{st.session_state.get('linked_senior_name', 'ご本人')}』様が実際に作成した最新献立")
-        try:
-            rec = st.session_state.get("recommended_menu", {})
-            if rec and isinstance(rec, dict):
-                st.success("🟢 本人が本日作成した最新の最適献立を取得しました")
-                st.write(f"🌅 **朝食**: {rec.get('朝食', '-')}")
-                st.write(f"🌞 **昼食**: {rec.get('昼食', '-')}")
-                st.write(f"🌙 **夕食**: {rec.get('夕食', '-')}")
+
+        st.markdown('<div class="brain-box">', unsafe_allow_html=True)
+        st.subheader("🎵 昭和の名曲・歌詞回想クイズ")
+        st.write("Q. 『川の流れのように』を歌った有名な昭和の歌手はどなたでしょう？")
+        q_ans = st.radio("答えを選択してください", ["坂本 九 さん", "美空 ひばり さん", "石原 裕次郎 さん"])
+        if st.button("答え合わせする"):
+            if q_ans == "美空 ひばり さん":
+                st.success("🎉 正解です！『川の流れのように』は美空ひばりさんの不朽の名曲ですね。元気pt +5!")
+                update_point(st.session_state.senior_fullname, 5)
+                st.session_state.genki_point += 5
             else:
-                st.info("💡 ご本人が作成した最新献立データを同期中です。")
-        except Exception:
-            pass
+                st.info("惜しい！正解は『美空 ひばり さん』でした。")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    st.divider()
+        st.subheader("☀ 今日の会話のきっかけカード")
+        tc1, tc2 = st.columns(2)
+        with tc1:
+            st.markdown("""<div class="topic-card">📻 <b>昭和の思い出会話カード</b><br><br><b>Q. 20代の頃、一番好きだった歌手や曲は誰ですか？</b><br>🎵 美空ひばりさん<br>🎵 石原裕次郎さん</div>""", unsafe_allow_html=True)
+        with tc2:
+            st.markdown("""<div class="topic-card">🍚 <b>食べ物の思い出会話カード</b><br><br><b>Q. 子どもの頃のお祝い料理は何でしたか？</b><br>🍣 お寿司・手巻き寿司<br>赤飯・お頭付きの魚</div>""", unsafe_allow_html=True)
 
-    # 🔐 パスワード認証付きアカウント切り替え
-    st.subheader("🔐 操作立場（権限モード）の切り替え")
-    role_options = ["👴 高齢者（本人）", "🎓 学生・若者モード", "👨‍👩‍👧 家族アカウント", "🏥 施設職員モード", "⚙️ システム管理者"]
-    current_role_idx = role_options.index(st.session_state.user_role) if st.session_state.user_role in role_options else 0
-    selected_role = st.selectbox("操作モード選択", role_options, index=current_role_idx)
+        st.divider()
 
-    if selected_role != st.session_state.user_role:
-        if selected_role == "🏥 施設職員モード" and not st.session_state.facility_authenticated:
-            pwd_input = st.text_input("🏥 施設アクセスコードを入力してください(shisetsu2026)", type="password", key="fac_pwd")
-            if st.button("施設権限でログイン"):
-                if hash_pass(pwd_input) == FACILITY_HASH:
-                    st.session_state.facility_authenticated = True
-                    st.session_state.user_role = selected_role
-                    st.success("🏥 施設職員モードへ切り替えました！")
+        st.subheader("📸 写真SNSアルバム")
+        if TRIAL_MODE:
+            st.caption("アルバムの投稿は試用参加者が閲覧できます。試用では個人を特定できる内容を控えてください。")
+        with st.expander("➕ 新しい投稿・思い出写真を投稿する", expanded=False):
+            p_title = st.text_input("投稿タイトル", "孫との楽しい休日")
+            uploaded_photo = st.file_uploader("📸 写真を選択（任意）", type=["jpg", "png", "jpeg"])
+            p_privacy = "🌐 試用参加者に公開" if TRIAL_MODE else st.selectbox(
+                "🔒 公開範囲を選択", ["🌐 全体公開（コミュニティみんなへ）", "🏢 施設内のみ（スタッフ・入所者へ）", "🔒 家族のみ（ご家族スマホ限定）"]
+            )
+            p_memo = st.text_area("💬 コメント・思い出メッセージ", "元気に過ごしました！")
+
+            if st.button("思い出アルバムに投稿＆共有"):
+                try:
+                    saved_img_path = save_uploaded_photo(uploaded_photo) if uploaded_photo is not None else ""
+
+                    msg_text = f"[{p_privacy}] 【{p_title}】 {p_memo}"
+                    add_post(st.session_state.senior_fullname, msg_text, saved_img_path)
+                    st.success("📸 思い出アルバムに投稿しました。")
                     st.rerun()
-                else:
-                    st.error("❌ アクセスコードが違います。")
-        elif selected_role == "👨‍👩‍👧 家族アカウント" and not st.session_state.family_authenticated:
-            pwd_input = st.text_input("👨‍👩‍👧 家族PINを入力してください(family)", type="password", key="fam_pwd")
-            if st.button("家族権限でログイン"):
-                if hash_pass(pwd_input) == FAMILY_HASH:
-                    st.session_state.family_authenticated = True
-                    st.session_state.user_role = selected_role
-                    st.success("👨‍👩‍👧 家族アカウントへ切り替えました！")
-                    st.rerun()
-                else:
-                    st.error("❌ PINが違います。")
-        elif selected_role == "⚙️ システム管理者" and not st.session_state.admin_authenticated:
-            pwd_input = st.text_input("⚙️ 管理者パスワードを入力してください", type="password", key="adm_pwd")
-            if st.button("管理者権限でログイン"):
-                if hash_pass(pwd_input) == ADMIN_HASH:
-                    st.session_state.admin_authenticated = True
-                    st.session_state.user_role = selected_role
-                    st.success("⚙️ システム管理者モードへ切り替えました！")
-                    st.rerun()
-                else:
-                    st.error("❌ パスワードが違います。")
-        else:
-            st.session_state.user_role = selected_role
-            st.success(f"操作モードを `{selected_role}` へ切り替えました！")
+                except Exception as e:
+                    st.error(f"投稿エラー: {e}")
+
+        community_view = st.segmented_control("交流の種類", ["みんなの交流", "同じ持病の仲間"], default="みんなの交流", required=True)
+
+        # --- タブ1: 全体タイムライン ---
+        if community_view == "みんなの交流":
+            st.subheader("📰 全体の交流タイムライン")
+            try:
+                posts = get_posts()
+                if posts:
+                    for p in posts[:10]:
+                        p_author = p[1] if isinstance(p, tuple) else p.get("username", "ご利用者")
+                        p_msg = p[2] if isinstance(p, tuple) else p.get("message", "")
+                        p_img = p[3] if isinstance(p, tuple) else p.get("image_path", "")
+                        p_time = p[7] if isinstance(p, tuple) else p.get("created_at", "")
+                        p_likes = p[8] if isinstance(p, tuple) else p.get("likes", 0)
+                        p_id = p[0] if isinstance(p, tuple) else p.get("id")
+                    
+                        with st.container():
+                            st.markdown(f"👤 **{escape(str(p_author))}** 様 &nbsp;&nbsp; <small style='color:gray;'>{p_time}</small>", unsafe_allow_html=True)
+                            st.write(p_msg)
+                            if p_img and os.path.exists(p_img):
+                                st.image(p_img, width=320)
+                        
+                            col_lk, col_del = st.columns([4, 1])
+                            with col_lk:
+                                if st.button(f"👍 いいね ({p_likes})", key=f"t1_like_{p_id}"):
+                                    add_like(p_id, st.session_state.senior_fullname)
+                                    st.rerun()
+                            with col_del:
+                                if p_author == st.session_state.senior_fullname or "施設" in st.session_state.user_role:
+                                    if st.button("🗑️ 削除", key=f"t1_del_{p_id}"):
+                                        delete_post(p_id)
+                                        st.rerun()
+                            st.divider()
+            except Exception as e:
+                st.error(f"取得エラー: {e}")
+
+        # --- タブ2: 🏥 同じ持病（疾患）同士の仲間コミュニティ（新機能） ---
+        if community_view == "同じ持病の仲間":
+            my_disease = st.session_state.get("senior_disease", "なし")
+            st.subheader(f"🏥 同病種・持病別コミュニティ")
+        
+            disease_options = ["高血圧", "糖尿病", "腎臓病", "脂質異常症", "骨粗しょう症", "認知症予防", "フレイル予防", "なし"]
+            default_idx = disease_options.index(my_disease) if my_disease in disease_options else 0
+        
+            filter_disease = st.selectbox(
+                "絞り込む持病・疾患を選択してください",
+                disease_options,
+                index=default_idx,
+                key="comm_disease_filter_select"
+            )
+        
+            st.info(f"💡 **「{filter_disease}」** に関する食事の工夫・減塩テクニック・日々の体験談を共有しましょう。")
+        
+            # フォームに写真添付機能を追加
+            with st.form("disease_post_form"):
+                d_msg = st.text_area(f"[{filter_disease}仲間へ] メッセージや工夫を入力", placeholder="減塩でも出汁を利かせると美味しく食べられました！皆様のおすすめレシピはありますか？")
+                uploaded_d_photo = st.file_uploader("📸 写真を添える（任意）", type=["jpg", "png", "jpeg"], key="disease_photo_uploader")
+            
+                if st.form_submit_button("💬 このコミュニティへ投稿"):
+                    if not d_msg.strip() and uploaded_d_photo is None:
+                        st.warning("メッセージまたは写真を選択してください。")
+                    else:
+                        try:
+                            saved_d_img_path = save_uploaded_photo(uploaded_d_photo) if uploaded_d_photo is not None else ""
+
+                            full_post_msg = f"[{filter_disease}コミュニティ] {d_msg}"
+                            add_post(st.session_state.senior_fullname, full_post_msg, saved_d_img_path)
+                            st.success("コミュニティへ写真付きメッセージを投稿しました！")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"投稿エラー: {e}")
+
+            st.divider()
+            st.markdown(f"##### 📜 「{filter_disease}」に関する投稿一覧")
+            try:
+                posts = get_posts()
+                found = False
+                if posts:
+                    for idx, p in enumerate(posts):
+                        # タプル形式・辞書形式の双方に対応
+                        if isinstance(p, tuple):
+                            p_id = p[0]
+                            p_author = p[1]
+                            p_msg = p[2] if len(p) > 2 else ""
+                            p_img = p[3] if len(p) > 3 else ""
+                            p_time = p[7] if len(p) > 7 else ""
+                        else:
+                            p_id = p.get("id")
+                            p_author = p.get("username", "ご利用者")
+                            p_msg = p.get("message", "")
+                            p_img = p.get("image_path", "")
+                            p_time = p.get("created_at", "")
+
+                        if f"[{filter_disease}コミュニティ]" in p_msg or filter_disease in p_msg:
+                            found = True
+                            clean_msg = p_msg.replace(f'[{filter_disease}コミュニティ]', '').strip()
+                        
+                            with st.container():
+                                st.markdown(f"👤 **{escape(str(p_author))}** 様 &nbsp;&nbsp; <small style='color:gray;'>{p_time}</small>", unsafe_allow_html=True)
+                            
+                                if clean_msg:
+                                    st.write(clean_msg)
+                            
+                                # 📸 添付写真の表示
+                                if p_img and os.path.exists(p_img):
+                                    st.image(p_img, width=320, caption="投稿写真")
+                            
+                                # 🗑️ 投稿削除機能（本人・施設職員・管理者が削除可能）
+                                if (p_author == st.session_state.senior_fullname or
+                                    "施設" in st.session_state.get("user_role", "") or
+                                    "システム管理者" in st.session_state.get("user_role", "")):
+                                
+                                    if st.button("🗑️ 投稿を削除", key=f"dis_del_{p_id}_{idx}"):
+                                        delete_post(p_id)
+                                        st.toast("コミュニティの投稿を削除しました。")
+                                        st.rerun()
+                            
+                                st.divider()
+
+                if not found:
+                    st.caption("まだこの疾患に関する投稿はありません。最初のメッセージや写真を投稿してみましょう！")
+            except Exception as e:
+                st.error(f"読み込みエラー: {e}")
+
+    # -------------------------------------------------------------------
+    # ページ 5: ⚙️ 設定（パスワード保護機能 ＆ セキュリティ強化型）
+    # -------------------------------------------------------------------
+    elif page == "⚙️ 設定":
+        st.header("⚙️ システム設定・ご家族連携設定")
+
+        render_watch_settings()
+        st.divider()
+
+        st.subheader("👤 プロフィール情報編集")
+        with st.form("edit_profile_form"):
+            st.text_input("ログイン時のユーザーID", value=st.session_state.user_id or "", disabled=True)
+            u_facility = st.text_input("🏥 所属施設・事業所名", value=st.session_state.facility_name)
+            c_p1, c_p2 = st.columns(2)
+            with c_p1:
+                p_age = st.number_input("年齢", min_value=18, max_value=120, value=int(st.session_state.senior_age))
+                p_height = st.number_input("身長(cm)", min_value=120.0, max_value=200.0, value=float(st.session_state.senior_height), step=0.5)
+                p_disease = st.selectbox("持病・配慮事項", ["なし", "高血圧", "糖尿病", "腎臓病", "脂質異常症", "認知症予防", "フレイル予防"])
+            with c_p2:
+                p_bdate = st.date_input("生年月日", value=st.session_state.senior_birthdate, min_value=date(1900, 1, 1), max_value=date.today())
+                p_weight = st.number_input("体重(kg)", min_value=30.0, max_value=150.0, value=float(st.session_state.senior_weight), step=0.5)
+                gender_options = ["男性", "女性", "未回答"]
+                current_gender = st.session_state.get("senior_gender", "未回答")
+                gender_idx = gender_options.index(current_gender) if current_gender in gender_options else 2
+
+                p_gender = st.radio("性別", gender_options, index=gender_idx, horizontal=True)
+
+            if st.form_submit_button("💾 プロフィール情報を更新"):
+                st.session_state.facility_name = u_facility
+                st.session_state.senior_age = int(p_age)
+                st.session_state.senior_height = float(p_height)
+                st.session_state.senior_weight = float(p_weight)
+                st.session_state.senior_disease = p_disease
+                st.session_state.senior_birthdate = p_bdate
+                st.session_state.senior_gender = p_gender
+                st.toast("プロフィール情報を更新しました！", icon="✅")
+                st.rerun()
+
+        st.divider()
+
+        # 🔐 パスワード認証付きアカウント切り替え
+        st.subheader("🔐 操作立場（権限モード）の切り替え")
+        role_options = ["一般（本人）", "👴 高齢者（本人）", "🎓 学生・若者モード", "👨‍👩‍👧 家族アカウント", "🏥 施設職員モード", "⚙️ システム管理者"]
+        current_role_idx = role_options.index(st.session_state.user_role) if st.session_state.user_role in role_options else 0
+        selected_role = st.selectbox("操作モード選択", role_options, index=current_role_idx)
+
+        if selected_role != st.session_state.user_role:
+            if selected_role == "🏥 施設職員モード" and not st.session_state.facility_authenticated:
+                pwd_input = st.text_input("施設アクセスコードを入力してください", type="password", key="fac_pwd")
+                if st.button("施設権限でログイン"):
+                    if ROLE_CODES[selected_role] and secrets.compare_digest(pwd_input.encode(), ROLE_CODES[selected_role].encode()):
+                        st.session_state.facility_authenticated = True
+                        st.session_state.user_role = selected_role
+                        st.success("🏥 施設職員モードへ切り替えました！")
+                        st.rerun()
+                    else:
+                        st.error("❌ アクセスコードが違います。")
+            elif selected_role == "👨‍👩‍👧 家族アカウント" and not st.session_state.family_authenticated:
+                pwd_input = st.text_input("家族のアクセスコードを入力してください", type="password", key="fam_pwd")
+                if st.button("家族権限でログイン"):
+                    if ROLE_CODES[selected_role] and secrets.compare_digest(pwd_input.encode(), ROLE_CODES[selected_role].encode()):
+                        st.session_state.family_authenticated = True
+                        st.session_state.user_role = selected_role
+                        st.success("👨‍👩‍👧 家族アカウントへ切り替えました！")
+                        st.rerun()
+                    else:
+                        st.error("❌ PINが違います。")
+            elif selected_role == "⚙️ システム管理者" and not st.session_state.admin_authenticated:
+                pwd_input = st.text_input("⚙️ 管理者パスワードを入力してください", type="password", key="adm_pwd")
+                if st.button("管理者権限でログイン"):
+                    if ROLE_CODES[selected_role] and secrets.compare_digest(pwd_input.encode(), ROLE_CODES[selected_role].encode()):
+                        st.session_state.admin_authenticated = True
+                        st.session_state.user_role = selected_role
+                        st.success("⚙️ システム管理者モードへ切り替えました！")
+                        st.rerun()
+                    else:
+                        st.error("❌ パスワードが違います。")
+            else:
+                st.session_state.user_role = selected_role
+                st.success(f"操作モードを `{selected_role}` へ切り替えました！")
+                st.rerun()
+
+        st.divider()
+        st.session_state.voice_enabled = st.toggle("🔊 音声読み上げを有効にする", value=st.session_state.voice_enabled)
+        if st.button("🔄 チュートリアルをもう一度見る"):
+            st.session_state.tutorial_finished = False
+            st.session_state.tutorial_page = 1
             st.rerun()
-
-    st.divider()
-    st.session_state.voice_enabled = st.toggle("🔊 音声読み上げを有効にする", value=st.session_state.voice_enabled)
-    if st.button("🔄 チュートリアルをもう一度見る"):
-        st.session_state.tutorial_finished = False
-        st.session_state.tutorial_page = 1
-        st.rerun()

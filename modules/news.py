@@ -1,7 +1,6 @@
 import json
 import os
-
-NEWS_FILE = "database/daily_news.json"
+from modules.runtime_paths import NEWS_FILE
 
 def load_news():
 

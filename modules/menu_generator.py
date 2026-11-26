@@ -66,7 +66,9 @@ def generate_menu(
     if difficulty and difficulty != "指定なし":
         diff_col = "difficulty" if "difficulty" in df.columns else ("level" if "level" in df.columns else None)
         if diff_col:
-            filtered_df = df[df[diff_col].astype(str).str.contains(str(difficulty).strip(), na=False)]
+            difficulty_name = str(difficulty).strip()
+            stars = {"簡単": "★", "普通": "★★", "本格的": "★★★"}
+            filtered_df = df[df[diff_col].astype(str).str.strip().isin([difficulty_name, stars.get(difficulty_name)])]
             if len(filtered_df) > 0:
                 df = filtered_df
 

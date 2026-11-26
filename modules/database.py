@@ -3,17 +3,10 @@ import csv
 import os
 import random
 from datetime import datetime
-
-
-import os
+from modules.runtime_paths import HEALTH_DB
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-
-DB_NAME = os.path.join(
-    BASE_DIR,
-    "database",
-    "health.db"
-)
+DB_NAME = HEALTH_DB
 
 
 
@@ -1549,7 +1542,8 @@ def update_schema_for_roadmap():
     # usersテーブルに新しいカラムを追加（既に存在する場合はスキップ）
     for column, col_type in [("role", "TEXT DEFAULT '高齢者'"), 
                              ("occupation", "TEXT DEFAULT '無職/退職'"), 
-                             ("badges", "TEXT DEFAULT ''")]:
+                             ("badges", "TEXT DEFAULT ''"),
+                             ("user_code", "TEXT")]:
         try:
             cur.execute(f"ALTER TABLE users ADD COLUMN {column} {col_type}")
         except sqlite3.OperationalError:
@@ -1608,13 +1602,6 @@ def update_schema_for_roadmap():
 
     conn.commit()
     conn.close()
-
-# アプリ起動時にスキーマ更新を自動実行
-try:
-    update_schema_for_roadmap()
-except Exception as e:
-    pass
-
 
 # --- 2. ユーザー登録・更新（UPSERT対応） ---
 def add_or_update_user(name, role, age, gender, height, weight, occupation, disease, mode):

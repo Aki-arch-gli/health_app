@@ -3,13 +3,10 @@ from config import GEMINI_API_KEY
 import json
 from config import AI_MODEL
 
-client = genai.Client(
-    api_key=GEMINI_API_KEY
-)
-
-
 def ask_ai(prompt):
-
+    if not GEMINI_API_KEY:
+        raise RuntimeError("献立・ニュースの生成にはGEMINI_API_KEYの設定が必要です。")
+    client = genai.Client(api_key=GEMINI_API_KEY)
     MODELS = [
       "gemini-3.5-flash",
       "gemini-3.1-flash-lite",
