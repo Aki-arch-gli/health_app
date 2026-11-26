@@ -82,3 +82,43 @@ class WellbeingTests(unittest.TestCase):
         self.assertEqual(store.measure_rows("owner", self.day, 1), [
             (self.day.isoformat(), None, None, 120, 75),
         ])
+
+    def test_profile_roundtrip_preserves_older_account_and_blank_values(self):
+        self.assertEqual(store.read_profile("owner"), {})
+        profile = {
+            "facility_name": "", "senior_age": 53, "senior_height": 115.0, "senior_weight": 29.5,
+            "senior_disease": "骨粗しょう症", "senior_birthdate": date(1973, 4, 2), "senior_gender": "未回答",
+        }
+        store.save_profile("owner", profile)
+        self.assertEqual(store.read_profile("owner"), profile)
+        self.assertEqual(store.read_profile("other"), {})
+        profile["senior_birthdate"] = None
+        store.save_profile("owner", profile)
+        self.assertEqual(store.read_profile("owner"), profile)
+
+    def test_restricting_share_and_removing_stamp_updates_the_view(self):
+        store.save_day("owner", self.day, "元気", "少なめ", True)
+        store.save_day("other", self.day, None, None, False)
+        token = store.create_invite("owner", "本人", True, self.now)
+        self.assertTrue(store.redeem_invite(token, "viewer", "見る人", self.now))
+        self.assertEqual(store.shared_weeks("viewer", self.day)["owner"]["days"][0][1:], ("元気", "少なめ"))
+        store.limit_share_to_stamps("owner", "viewer")
+        self.assertEqual(store.shared_weeks("viewer", self.day)["owner"]["days"][0][1:], (None, None))
+        store.clear_day("owner", self.day)
+        self.assertEqual(store.shared_weeks("viewer", self.day)["owner"]["days"], [])
+        self.assertEqual(len(store.own_days("other", self.day)), 1)
+
+    def test_export_uses_permissions_at_download_time(self):
+        from modules.wellbeing_ui import _shared_week_pdf
+
+        store.save_day("owner", self.day, "元気", "少なめ", True)
+        token = store.create_invite("owner", "本人", True, self.now)
+        self.assertTrue(store.redeem_invite(token, "viewer", "見る人", self.now))
+        with patch("modules.wellbeing_ui.store.today_in_japan", return_value=self.day), patch(
+            "modules.wellbeing_ui.build_meal_card", side_effect=lambda title, sections: str(sections)
+        ):
+            self.assertIn("少なめ", _shared_week_pdf("viewer", "owner"))
+            store.limit_share_to_stamps("owner", "viewer")
+            self.assertNotIn("少なめ", _shared_week_pdf("viewer", "owner"))
+            store.revoke_share("owner", "viewer")
+            self.assertNotIn("本人", _shared_week_pdf("viewer", "owner"))

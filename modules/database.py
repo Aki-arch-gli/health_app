@@ -629,12 +629,19 @@ def add_post(
 # 投稿取得
 # ==========================
 
-def get_posts():
+_POST_VISIBILITY = """(username = ? OR (
+    COALESCE(message, '') NOT LIKE '[🏢 施設内のみ%' AND
+    COALESCE(message, '') NOT LIKE '[🔒 家族のみ%' AND
+    COALESCE(message, '') NOT LIKE '[🔒 自分だけ%'
+))"""
+
+
+def get_posts(viewer_name=None):
 
     conn = connect()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(f"""
         SELECT
 
         id,
@@ -648,11 +655,12 @@ def get_posts():
         likes
 
         FROM posts
+        WHERE {_POST_VISIBILITY}
 
         ORDER BY id DESC
 
         LIMIT 20
-    """)
+    """, (viewer_name,))
 
     posts = cur.fetchall()
 
@@ -1686,13 +1694,16 @@ def add_or_update_user(name, role, age, gender, height, weight, occupation, dise
     finally:
         conn.close()
 
-def get_all_seniors():
+def get_assigned_seniors(names):
+    if not names:
+        return []
     conn = connect()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE role LIKE '%高齢者%' OR mode LIKE '%高齢者%'")
+    placeholders = ", ".join("?" for _ in names)
+    cur.execute(f"SELECT DISTINCT name FROM users WHERE name IN ({placeholders}) ORDER BY name", names)
     users = cur.fetchall()
     conn.close()
-    return users
+    return [name for (name,) in users]
 
 
 # --- 3. Phase 8: 生活支援チェックリスト ---
@@ -1762,11 +1773,12 @@ def get_family_comments(username):
 
 
 # --- 5. Phase 4: コミュニティ検索フィルター ---
-def get_posts_filtered(age_group=None, disease=None, tag=None):
+def get_posts_filtered(age_group=None, disease=None, tag=None, viewer_name=None):
     conn = connect()
     cur = conn.cursor()
-    query = "SELECT id, username, message, image, breakfast, lunch, dinner, created_at, likes, user_age, user_disease, rating, tag FROM posts WHERE 1=1"
-    params = []
+    query = f"""SELECT id, username, message, image, breakfast, lunch, dinner, created_at, likes,
+                       user_age, user_disease, rating, tag FROM posts WHERE {_POST_VISIBILITY}"""
+    params = [viewer_name]
     
     if age_group and age_group != "全年代":
         try:

@@ -23,10 +23,11 @@ def build_meal_card(title, sections, shopping=()):
         lines.extend(Paragraph(escape(str(line)), body) for line in details)
         story.extend([KeepTogether(lines), Spacer(1, 12)])
     if shopping:
-        story.extend([Paragraph("買い物リスト", heading), Paragraph(escape("、".join(shopping)), body)])
-    story.extend([
-        Spacer(1, 12),
-        Paragraph("買い物や調理が難しいときは、お住まいの市区町村の福祉窓口へ。", body),
-    ])
+        story.extend([
+            Paragraph("買い物リスト", heading),
+            Paragraph(escape("、".join(shopping)), body),
+            Spacer(1, 12),
+            Paragraph("買い物や調理が難しいときは、お住まいの市区町村の福祉窓口へ。", body),
+        ])
     document.build(story)
     return output.getvalue()

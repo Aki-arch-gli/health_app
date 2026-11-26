@@ -121,7 +121,7 @@ def dinner_candidates(limit, stock, excluded, no_shopping):
     return meals
 
 
-def select_dinners(candidates, count, history, prefer_fewer=False, discover=False, priority="variety", cost_key="cost"):
+def select_dinners(candidates, count, history, prefer_fewer=False, discover=False, priority="variety", cost_key="cost", previous=()):
     seen_meals = set(history)
     recent_mains = {key[1] for key in history[-14:]}
     used_mains, sides, groups = set(), set(), set()
@@ -146,8 +146,10 @@ def select_dinners(candidates, count, history, prefer_fewer=False, discover=Fals
             return (cost - meal["vegetables"] * 0.6 + variety,)
         return (variety,)
 
-    for _ in range(count):
-        available = (meal for meal in candidates if meal["main"]["id"] not in used_mains)
+    new_meals = [meal for meal in candidates if meal_key(meal) not in previous] if previous else []
+    for index in range(count):
+        pool = new_meals if index == 0 and new_meals else candidates
+        available = (meal for meal in pool if meal["main"]["id"] not in used_mains)
         best = min(available, key=score, default=None)
         if best is None:
             break

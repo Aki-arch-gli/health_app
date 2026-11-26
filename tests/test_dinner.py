@@ -1,6 +1,6 @@
 import unittest
 
-from modules.dinner import FOODS, PANTRY, dinner_candidates, select_dinners, within_dinner_budget
+from modules.dinner import FOODS, PANTRY, dinner_candidates, meal_key, select_dinners, within_dinner_budget
 
 
 class DinnerBudgetTests(unittest.TestCase):
@@ -17,3 +17,13 @@ class DinnerBudgetTests(unittest.TestCase):
         self.assertTrue(all(meal["extra_cost"] <= 150 for meal in affordable))
         result = select_dinners(affordable, 1, [], priority="cost", cost_key="extra_cost")[0]
         self.assertEqual(result["extra_cost"], min(meal["extra_cost"] for meal in affordable))
+
+    def test_choosing_another_cheap_week_introduces_a_new_meal(self):
+        candidates = within_dinner_budget(dinner_candidates(20, PANTRY, set(), False), 350)
+        first = select_dinners(candidates, 7, [], priority="cost")
+        previous = {meal_key(meal) for meal in first}
+        next_plan = select_dinners(candidates, 7, list(previous), priority="cost", previous=previous)
+        self.assertEqual(len(next_plan), len(first))
+        self.assertEqual(len({meal["main"]["id"] for meal in next_plan}), len(next_plan))
+        self.assertTrue({meal_key(meal) for meal in next_plan} - previous)
+        self.assertTrue(all(meal["cost"] <= 350 for meal in next_plan))

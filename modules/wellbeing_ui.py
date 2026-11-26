@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from functools import partial
 
 import pandas as pd
 import streamlit as st
@@ -57,6 +58,15 @@ def render_today(open_login):
         if notice:
             st.success(notice)
         _week(days, today)
+        if latest:
+            with st.popover("今日の記録を取り消す"):
+                if st.button("今日のひとこととスタンプを取り消す", key="clear_today_stamp"):
+                    if owner:
+                        store.clear_day(owner, today)
+                    else:
+                        st.session_state.pop("guest_wellbeing_day", None)
+                    st.session_state.wellbeing_saved = "今日のひとこととスタンプを取り消しました。"
+                    st.rerun()
         if owner:
             number = len(days)
             stage = "種" if number < 3 else "芽" if number < 7 else "若葉" if number < 14 else "花"
@@ -84,6 +94,7 @@ def render_watch_settings():
     st.subheader("見守りの共有")
     st.write("共有先は、共有開始日以降の直近7日分のスタンプを閲覧し、あなたにメッセージを送れます。")
     st.caption("気分と食欲は下で選んだ場合に共有されます。水分・体重・血圧は本人の記録に表示されます。")
+    st.caption("共有先は表示された内容をPDFで保存できます。保存済みのPDFは共有先の端末に残ります。")
     details = st.checkbox("気分と食欲も共有する", key="wellbeing_invite_details")
     if st.button("招待コードを発行", key="wellbeing_issue"):
         st.session_state.wellbeing_invite_code = store.create_invite(owner, name, details, now)
@@ -103,9 +114,13 @@ def render_watch_settings():
     for viewer, viewer_name, share_details in shares:
         row, action = st.columns([3, 2], vertical_alignment="center")
         row.text(f"{viewer_name} · {'スタンプ、気分、食欲' if share_details else 'スタンプ'}")
-        if action.button("共有を停止", key=f"wellbeing_revoke_{viewer}"):
-            store.revoke_share(owner, viewer)
-            st.rerun()
+        with action.popover("共有を変更"):
+            if share_details and st.button("スタンプだけに変更", key=f"wellbeing_limit_{viewer}"):
+                store.limit_share_to_stamps(owner, viewer)
+                st.rerun()
+            if st.button("この相手との共有を停止", key=f"wellbeing_revoke_{viewer}"):
+                store.revoke_share(owner, viewer)
+                st.rerun()
     with st.form("wellbeing_accept_invite", clear_on_submit=True):
         invite = st.text_input("受け取った招待コード", type="password", max_chars=24)
         if st.form_submit_button("見守りを始める", key="wellbeing_accept"):
@@ -113,6 +128,17 @@ def render_watch_settings():
                 st.success("登録しました。「交流・思い出」の見守りから記録を確認できます。")
             else:
                 st.warning("招待コードを確認してください。期限切れや使用済みの場合は、本人に再発行を頼めます。")
+
+
+def _shared_week_pdf(viewer, owner):
+    current = store.shared_weeks(viewer, store.today_in_japan()).get(owner)
+    if not current or not current["days"]:
+        return build_meal_card("共有された見守り記録", [("現在の共有内容", ["表示できる記録はありません。"])])
+    lines = []
+    for day, mood, appetite in current["days"]:
+        text = f"気分 {mood or '—'}　食欲 {appetite or '—'}" if current["details"] else "記録あり"
+        lines.append(f"{day}　{text}")
+    return build_meal_card("共有された見守り記録", [(current["name"], lines)])
 
 
 def render_shared():
@@ -131,16 +157,12 @@ def render_shared():
             st.text(entry["name"])
             days = entry["days"]
             _week(days, today)
-            lines = []
             if days and entry["details"]:
                 for day, mood, appetite in days:
-                    line = f"{day}　気分 {mood or '—'}　食欲 {appetite or '—'}"
-                    lines.append(line)
-                    st.text(line)
+                    st.text(f"{day}　気分 {mood or '—'}　食欲 {appetite or '—'}")
             if days:
-                day_lines = lines or [f"{day}　記録あり" for day, *_ in days]
-                pdf = build_meal_card("共有された見守り記録", [(entry["name"], day_lines)])
-                st.download_button("共有記録をPDF保存", pdf, file_name="wellbeing-week.pdf", mime="application/pdf",
+                st.download_button("共有記録をPDF保存", partial(_shared_week_pdf, viewer, owner),
+                                   file_name="wellbeing-week.pdf", mime="application/pdf",
                                    key=f"shared_pdf_{owner}", on_click="ignore")
             with st.form(f"wellbeing_note_{owner}", clear_on_submit=True):
                 message = st.text_input("ひとこと送る", max_chars=250, placeholder="例　今日も応援しています")
@@ -149,6 +171,11 @@ def render_shared():
                         st.success("メッセージを送りました。")
                     else:
                         st.warning("メッセージを入力し、共有中であることを確認してください。")
+            with st.popover("この方の見守りをやめる"):
+                st.caption("再開する場合は、本人に招待コードを発行してもらいます。")
+                if st.button("見守りを終了する", key=f"wellbeing_leave_{owner}"):
+                    store.revoke_share(owner, viewer)
+                    st.rerun()
 
 
 def render_messages():
@@ -171,7 +198,7 @@ def render_measurements():
         return
     today = store.today_in_japan()
     current = store.measure_rows(owner, today, 1)
-    water, weight, high, low = current[0][1:] if current else (None, None, None, None)
+    water = current[0][1] if current else None
     st.subheader("今日の水分記録")
     st.write("まだ記録がありません。" if water is None else f"今日の記録　**{water:,} mL**")
     with st.container(horizontal=True):
@@ -179,15 +206,22 @@ def render_measurements():
             if st.button(label, key=f"wellbeing_water_{label}"):
                 store.record_water(owner, today, amount)
                 st.rerun()
-    with st.expander("水分・体重・血圧を入力する"):
-        st.caption("入力した項目を今日の値として保存します。")
+    with st.expander("水分・体重・血圧を入力・修正する"):
+        record_day = st.date_input(
+            "記録する日", value=today, min_value=today - timedelta(days=29), max_value=today, key="measure_day",
+        )
+        rows_for_day = current if record_day == today else store.measure_rows(owner, record_day, 1)
+        water, weight, high, low = rows_for_day[0][1:] if rows_for_day else (None, None, None, None)
+        st.caption("選んだ日の記録です。入力した項目だけを更新します。")
+        if water is not None:
+            st.caption(f"保存済みの水分量　{water:,} mL")
         if weight is not None:
             st.caption(f"保存済みの体重　{weight:g} kg")
         if high is not None or low is not None:
             high_label = high if high is not None else "未入力"
             low_label = low if low is not None else "未入力"
             st.caption(f"保存済みの血圧　上 {high_label} ／ 下 {low_label} mmHg")
-        with st.form(f"wellbeing_measures_{today.isoformat()}"):
+        with st.form(f"wellbeing_measures_{record_day.isoformat()}"):
             a, b = st.columns(2)
             water_input = a.number_input("その日の水分量 (mL)", min_value=0, step=50, value=None, placeholder="未入力")
             weight_input = b.number_input("体重 (kg)", min_value=0.1, step=0.1, value=None, placeholder="未入力")
@@ -198,11 +232,11 @@ def render_measurements():
                     st.info("記録したい項目を入力してください。")
                 else:
                     try:
-                        store.save_measures(owner, today, water_input, weight_input, high_input, low_input)
+                        store.save_measures(owner, record_day, water_input, weight_input, high_input, low_input)
                     except ValueError as error:
                         st.warning(str(error))
                     else:
-                        st.session_state.measure_notice = "入力した測定値を保存しました。"
+                        st.session_state.measure_notice = f"{record_day.month}月{record_day.day}日の測定値を保存しました。"
                         st.rerun()
     existing = []
     if water is not None:
@@ -212,11 +246,12 @@ def render_measurements():
     if high is not None or low is not None:
         existing.append("血圧")
     if existing:
-        with st.expander("今日の記録を取り消す"):
-            kind_to_remove = st.selectbox("取り消す項目", existing, index=None, placeholder="項目を選ぶ")
+        with st.expander(f"{record_day.month}月{record_day.day}日の記録を取り消す"):
+            kind_to_remove = st.selectbox("取り消す項目", existing, index=None, placeholder="項目を選ぶ",
+                                          key=f"wellbeing_remove_{record_day.isoformat()}")
             if st.button("選んだ項目を取り消す", disabled=kind_to_remove is None):
-                store.clear_measure(owner, today, kind_to_remove)
-                st.session_state.measure_notice = f"今日の{kind_to_remove}の記録を取り消しました。"
+                store.clear_measure(owner, record_day, kind_to_remove)
+                st.session_state.measure_notice = f"{record_day.month}月{record_day.day}日の{kind_to_remove}の記録を取り消しました。"
                 st.rerun()
     if notice := st.session_state.pop("measure_notice", None):
         st.success(notice)
@@ -231,6 +266,9 @@ def render_measurements():
         st.info("この期間に選んだ項目の記録はありません。")
     else:
         chart["日付"] = pd.to_datetime(chart["日付"])
-        st.line_chart(chart, x="日付", y=labels[kind])
+        if len(chart) == 1:
+            st.scatter_chart(chart, x="日付", y=labels[kind], alt=f"{kind}の測定値")
+        else:
+            st.line_chart(chart, x="日付", y=labels[kind], alt=f"{kind}の測定値の推移")
         chart["日付"] = chart["日付"].dt.strftime("%Y-%m-%d")
         st.dataframe(chart, hide_index=True)

@@ -22,7 +22,7 @@ header[data-testid="stHeader"] { background: var(--kurashi-page) !important; }
   background: var(--kurashi-selected);
   color: var(--kurashi-on_selected) !important;
 }
-.st-key-main_tab [role="tablist"] {
+.st-key-kurashi_navigation [role="tablist"] {
   gap: .32rem;
   background: var(--kurashi-paper);
   border: 1px solid var(--kurashi-border);
@@ -30,7 +30,7 @@ header[data-testid="stHeader"] { background: var(--kurashi-page) !important; }
   padding: .28rem;
   margin-bottom: 1.2rem;
 }
-.st-key-main_tab [role="tablist"] [role="tab"] {
+.st-key-kurashi_navigation [role="tablist"] [role="tab"] {
   min-height: 44px;
   min-width: max-content;
   flex: 1 0 auto;
@@ -40,13 +40,13 @@ header[data-testid="stHeader"] { background: var(--kurashi-page) !important; }
   border-radius: .63rem;
   color: var(--kurashi-ink) !important;
 }
-.st-key-main_tab [role="tablist"] [aria-selected="true"],
-.st-key-main_tab [role="tablist"] [aria-selected="true"] * {
+.st-key-kurashi_navigation [role="tablist"] [aria-selected="true"],
+.st-key-kurashi_navigation [role="tablist"] [aria-selected="true"] * {
   background: var(--kurashi-selected);
   color: var(--kurashi-on_selected) !important;
   font-weight: 750;
 }
-.st-key-main_tab [role="tablist"] [data-baseweb="tab-highlight"] { display: none; }
+.st-key-kurashi_navigation [role="tablist"] [data-baseweb="tab-highlight"] { display: none; }
 .st-key-kurashi_hero {
   background: var(--kurashi-banner);
   border: 1px solid var(--kurashi-border);
@@ -75,7 +75,7 @@ button[data-testid^="stBaseButton-primary"] {
   color: var(--kurashi-on_selected) !important;
 }
 button[data-testid^="stBaseButton-primary"] * { color: var(--kurashi-on_selected) !important; }
-.st-key-main_tab button:focus-visible { outline: 3px solid var(--kurashi-accent); outline-offset: 2px; }
+.st-key-kurashi_navigation [role="tab"]:focus-visible { outline: 3px solid var(--kurashi-accent); outline-offset: -3px; }
 .kurashi-stamps {
   padding: 0 !important;
   list-style: none;
@@ -126,5 +126,14 @@ button[data-testid^="stBaseButton-primary"] * { color: var(--kurashi-on_selected
 }
 @media (max-width: 600px) {
   [data-testid="stMainBlockContainer"] { padding-inline: 1rem; }
-  .st-key-main_tab [role="tablist"] [role="tab"] { padding-inline: .55rem; }
+  .st-key-kurashi_navigation [role="tablist"] {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .st-key-kurashi_navigation [role="tablist"] [role="tab"] {
+    min-width: 0;
+    padding-inline: .25rem;
+    white-space: normal;
+    text-align: center;
+  }
 }

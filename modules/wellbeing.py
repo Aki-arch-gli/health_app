@@ -26,6 +26,7 @@ STEPS = (
 INVITE_HOURS = 24
 PASSWORD_ITERATIONS = 600_000
 MEASURE_COLUMNS = {"水分": ("water",), "体重": ("weight",), "血圧": ("high", "low")}
+PROFILE_FIELDS = ("facility_name", "senior_age", "senior_height", "senior_weight", "senior_disease", "senior_birthdate", "senior_gender")
 
 
 def today_in_japan():
@@ -67,7 +68,39 @@ def init_wellbeing():
                 people INTEGER NOT NULL CHECK (people BETWEEN 1 AND 6),
                 PRIMARY KEY (owner, staple, main, side, people)
             );
+            CREATE TABLE IF NOT EXISTS wellbeing_profiles (
+                owner TEXT PRIMARY KEY, facility_name TEXT NOT NULL, senior_age INTEGER NOT NULL,
+                senior_height REAL NOT NULL, senior_weight REAL NOT NULL, senior_disease TEXT NOT NULL,
+                senior_birthdate TEXT, senior_gender TEXT NOT NULL
+            );
         """)
+
+
+def read_profile(owner):
+    with closing(connect()) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM wellbeing_profiles WHERE owner=?", (owner,)).fetchone()
+    if row is None:
+        return {}
+    values = {field: row[field] for field in PROFILE_FIELDS}
+    if values["senior_birthdate"]:
+        values["senior_birthdate"] = date.fromisoformat(values["senior_birthdate"])
+    return values
+
+
+def save_profile(owner, values):
+    fields = dict(values)
+    birthday = fields["senior_birthdate"]
+    fields["senior_birthdate"] = birthday.isoformat() if birthday else None
+    with closing(connect()) as db, db:
+        db.execute(
+            """INSERT INTO wellbeing_profiles VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (owner) DO UPDATE SET facility_name=excluded.facility_name,
+                 senior_age=excluded.senior_age, senior_height=excluded.senior_height,
+                 senior_weight=excluded.senior_weight, senior_disease=excluded.senior_disease,
+                 senior_birthdate=excluded.senior_birthdate, senior_gender=excluded.senior_gender""",
+            (owner, *(fields[field] for field in PROFILE_FIELDS)),
+        )
 
 
 def dinner_favorite_keys(owner):
@@ -147,6 +180,11 @@ def own_days(owner, through):
         ).fetchall()
 
 
+def clear_day(owner, day):
+    with closing(connect()) as db, db:
+        db.execute("DELETE FROM wellbeing_days WHERE owner=? AND day=?", (owner, day.isoformat()))
+
+
 def week_summary(days, today):
     recorded = {date.fromisoformat(day) for day, *_ in days}
     week = [(today - timedelta(days=offset)) for offset in range(6, -1, -1)]
@@ -217,6 +255,11 @@ def outgoing_shares(owner):
 def revoke_share(owner, viewer):
     with closing(connect()) as db, db:
         db.execute("DELETE FROM wellbeing_shares WHERE owner=? AND viewer=?", (owner, viewer))
+
+
+def limit_share_to_stamps(owner, viewer):
+    with closing(connect()) as db, db:
+        db.execute("UPDATE wellbeing_shares SET details=0 WHERE owner=? AND viewer=?", (owner, viewer))
 
 
 def shared_weeks(viewer, today):

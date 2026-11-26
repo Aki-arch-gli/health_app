@@ -1,4 +1,5 @@
 import json
+from functools import partial
 from urllib.error import URLError
 from urllib.parse import urlencode
 
@@ -150,26 +151,40 @@ def _set_dinner_favorite(owner, key, item):
 
 def render_dinner():
     st.subheader("食材から夕食を探す")
+    saved = st.session_state.get("simple_dinner_filters", {})
+    limits = [15, 20, 25, 40]
+    people_options = list(range(1, 7))
+    day_options = [1, 7]
+    shopping_options = ["指定なし", "なるべく少なく", "買い足しなし"]
     with st.form("simple_dinner"):
         first, second, third = st.columns(3)
-        people = first.selectbox("人数", range(1, 7), format_func=lambda n: f"{n}人分")
-        limit = second.selectbox("調理時間", [15, 20, 25, 40], index=1, format_func=lambda n: f"{n}分以内")
-        count = third.selectbox("日数", [1, 7], format_func=lambda n: "今夜" if n == 1 else "1週間")
+        people = first.selectbox("人数", people_options, index=people_options.index(saved.get("people", 1)), format_func=lambda n: f"{n}人分", key="dinner_people")
+        limit = second.selectbox("調理時間", limits, index=limits.index(saved.get("limit", 20)), format_func=lambda n: f"{n}分以内", key="dinner_limit")
+        count = third.selectbox("日数", day_options, index=day_options.index(saved.get("count", 1)), format_func=lambda n: "今夜" if n == 1 else "1週間", key="dinner_days")
         budget, order = st.columns(2)
-        ceiling = budget.number_input("1人1食の予算（円・任意）", min_value=0, value=None, step=50, placeholder="例 250")
-        priority = order.selectbox("優先すること", list(DINNER_PRIORITIES), format_func=DINNER_PRIORITIES.__getitem__)
-        cost_key = st.radio("予算の基準", list(BUDGET_BASES), format_func=BUDGET_BASES.__getitem__, horizontal=True)
-        stock = st.multiselect("家にある食材", [food for food in FOODS if food not in PANTRY], placeholder="食材名を入力")
+        ceiling = budget.number_input("1人1食の予算（円・任意）", min_value=0, value=saved.get("ceiling"), step=50, placeholder="例 250", key="dinner_ceiling")
+        priority = order.selectbox("優先すること", list(DINNER_PRIORITIES), index=list(DINNER_PRIORITIES).index(saved.get("priority", "variety")),
+                                   format_func=DINNER_PRIORITIES.__getitem__, key="dinner_priority")
+        cost_key = st.radio("予算の基準", list(BUDGET_BASES), index=list(BUDGET_BASES).index(saved.get("cost_key", "cost")),
+                            format_func=BUDGET_BASES.__getitem__, horizontal=True, key="dinner_cost_key")
+        stock = st.multiselect("家にある食材", [food for food in FOODS if food not in PANTRY], default=saved.get("stock", []),
+                               placeholder="食材名を入力", key="dinner_stock")
         with st.expander("使わない食材・基本の調味料"):
-            excluded = st.multiselect("好みで使わない食材", FOODS, placeholder="食材名を入力")
-            pantry = st.checkbox("基本の調味料は家にある", value=True)
+            excluded = st.multiselect("好みで使わない食材", FOODS, default=saved.get("excluded", []),
+                                      placeholder="食材名を入力", key="dinner_excluded")
+            pantry = st.checkbox("基本の調味料は家にある", value=saved.get("pantry", True), key="dinner_pantry")
             st.caption("、".join(sorted(PANTRY - {"水"})))
-        shopping = st.radio("買い足し", ["指定なし", "なるべく少なく", "買い足しなし"], horizontal=True)
+        shopping = st.radio("買い足し", shopping_options, index=shopping_options.index(saved.get("shopping", "指定なし")),
+                            horizontal=True, key="dinner_shopping")
         submitted = st.form_submit_button("献立を探す", type="primary")
     st.caption("時間は炊飯を除いた目安です。療養食や食物アレルギーは専門職や商品の原材料表示で確認してください。")
     st.caption("金額は使う分の参考額です。「買い足す食材だけ」を選ぶと、家にある食材を除いて計算します。袋やパック単位の支払額は店頭で確認してください。")
 
     if submitted:
+        st.session_state.simple_dinner_filters = {
+            "people": people, "limit": limit, "count": count, "ceiling": ceiling, "priority": priority,
+            "cost_key": cost_key, "stock": stock, "excluded": excluded, "pantry": pantry, "shopping": shopping,
+        }
         available = set(stock) | (PANTRY if pantry else {"水"})
         matching = dinner_candidates(limit, available, set(excluded), shopping == "買い足しなし")
         candidates = within_dinner_budget(matching, ceiling, cost_key)
@@ -206,13 +221,12 @@ def render_dinner():
         return
     if len(meals) < count:
         st.info(f"主菜が重ならない候補を{len(meals)}日分表示しています。")
-    if st.button("別の献立を探す", key="simple_dinner_another", disabled=len(candidates) < 2):
-        others = candidates
-        if count == 1:
-            others = [meal for meal in candidates if meal_key(meal) != meal_key(meals[0])]
+    previous = {meal_key(meal) for meal in meals}
+    has_alternative = any(meal_key(meal) not in previous for meal in candidates)
+    if st.button("別の献立を探す", key="simple_dinner_another", disabled=not has_alternative):
         meals = select_dinners(
-            others, count, st.session_state.simple_dinner_history, plan["prefer_fewer"],
-            discover=True, priority=priority, cost_key=cost_key,
+            candidates, count, st.session_state.simple_dinner_history, plan["prefer_fewer"],
+            discover=True, priority=priority, cost_key=cost_key, previous=previous,
         )
         st.session_state.simple_dinner_results = meals
         _remember(meals)
@@ -262,7 +276,7 @@ def render_dinner():
             lines.append(dish["method"])
         sections.append((f"{index + 1}日目の夕食" if count > 1 else "今夜の夕食", lines))
     shopping_text = [f"{name} {quantity(amount, unit)}" for name, amount, unit in items] or ["買い足しなし"]
-    st.download_button("夕食の献立カードをPDF保存", build_meal_card("暮らしの食卓", sections, shopping_text),
+    st.download_button("夕食の献立カードをPDF保存", partial(build_meal_card, "暮らしの食卓", sections, shopping_text),
                        file_name="dinner-card.pdf", mime="application/pdf", on_click="ignore")
 
 
@@ -376,29 +390,43 @@ def consultation_memo_download(memo, contacts, for_older):
     return "\n".join(lines)
 
 
+def _remember_consultation_memo():
+    st.session_state.consult_draft = st.session_state.consult_memo
+
+
 def render_consultation():
     st.header("暮らしの困りごとを相談する", anchor="life-support")
     st.write("食費や食事の心配が重なっていたり、使える制度がわからなかったりするときも、相談先を探せます。")
+    filters = st.session_state.setdefault("consult_filters", {})
+    for key, value in filters.items():
+        st.session_state.setdefault(key, value)
     seed = st.session_state.pop("consult_topic_seed", None)
     if seed:
         st.session_state.consult_topic = seed
     topic = st.selectbox("何に困っていますか", list(TOPICS), format_func=lambda key: TOPICS[key]["label"], key="consult_topic")
     topic_data = TOPICS[topic]
-    region = st.radio("相談したい方の地域", ["西東京市以外・わからない", "西東京市"], horizontal=True)
+    region = st.radio("相談したい方の地域", ["西東京市以外・わからない", "西東京市"], horizontal=True, key="consult_region")
     for_older = topic == "care" or (
         topic in {"money", "nutrition", "shopping", "unsure"}
-        and st.checkbox("高齢のご本人や、ご家族のことも相談したい")
+        and st.checkbox("高齢のご本人や、ご家族のことも相談したい", key="consult_for_older")
     )
-    town = st.selectbox("相談したい方が住む町名（任意）", ["選ばずに探す", *TOWNS]) if region == "西東京市" and for_older else None
+    town = st.selectbox(
+        "相談したい方が住む町名（任意）", ["選ばずに探す", *TOWNS], key="consult_town",
+    ) if region == "西東京市" and for_older else None
     relationship = channel = None
     if for_older:
         st.caption("離れて暮らす家族について相談するときは、その方が住む地域を選びます。")
         left, right = st.columns(2)
-        relationship = left.selectbox("相談する方（任意）", ["本人", "家族", "知人・支援者"], index=None, placeholder="選ばずに進めます")
-        channel = right.selectbox("希望する相談方法（任意）", ["電話", "来所", "訪問について相談したい"], index=None, placeholder="選ばずに進めます")
-    circumstances = st.multiselect("当てはまること（任意）", topic_data["options"], key=f"consult_{topic}_options", placeholder="当てはまる項目を選ぶ")
+        relationship = left.selectbox("相談する方（任意）", ["本人", "家族", "知人・支援者"], index=None, placeholder="選ばずに進めます", key="consult_relationship")
+        channel = right.selectbox("希望する相談方法（任意）", ["電話", "来所", "訪問について相談したい"], index=None, placeholder="選ばずに進めます", key="consult_channel")
+    options_key = f"consult_{topic}_options"
+    circumstances = st.multiselect("当てはまること（任意）", topic_data["options"], key=options_key, placeholder="当てはまる項目を選ぶ")
+    for key in ("consult_topic", "consult_region", "consult_for_older", "consult_town", "consult_relationship", "consult_channel", options_key):
+        if key in st.session_state:
+            filters[key] = st.session_state[key]
     selection = (topic, region, town, for_older, tuple(circumstances), relationship, channel)
-    if st.button("相談先とメモを見る", key="show_consultation", type="primary"):
+    show = st.button("相談先とメモを見る", key="show_consultation", type="primary")
+    if show and st.session_state.get("consult_selection") != selection:
         st.session_state.consult_selection = selection
         st.session_state.consult_consent = False
         about = "、".join(circumstances) or topic_data["label"]
@@ -409,7 +437,8 @@ def render_consultation():
             notes.append(f"相談する方　{relationship}")
         if channel:
             notes.append(f"希望する相談方法　{channel}")
-        st.session_state.consult_memo = "\n".join(notes)
+        st.session_state.consult_draft = "\n".join(notes)
+        st.session_state.consult_memo = st.session_state.consult_draft
         st.session_state.consult_added = []
     if st.session_state.get("consult_selection") == selection:
         if "今日食べるものの用意が難しい" in circumstances:
@@ -430,18 +459,33 @@ def render_consultation():
                     new = [key for key in found if key not in st.session_state.consult_added]
                     if new:
                         questions = DIRECTORY["followupQuestions"]
-                        st.session_state.consult_memo += "\n\n" + "\n".join(f"・{questions[key]}。" for key in new)
-                        st.session_state.consult_added.extend(new)
+                        expanded_memo = st.session_state.consult_draft + "\n\n" + "\n".join(
+                            f"・{questions[key]}。" for key in new
+                        )
+                        if len(expanded_memo) <= 1500:
+                            st.session_state.consult_memo = expanded_memo
+                            _remember_consultation_memo()
+                            st.session_state.consult_added.extend(new)
+                        else:
+                            st.info("メモが長いため、内容を短くすると質問を加えられます。")
                     else:
                         st.info("追加の質問はありませんでした。")
                 except (URLError, OSError, ValueError, KeyError, TypeError, AttributeError, IndexError):
                     st.warning("AIに接続できませんでした。相談先と作成済みのメモは引き続き使えます。")
-        memo = st.text_area("電話や面談で使う相談メモ", key="consult_memo", height=145, max_chars=1500)
+        if "consult_memo" not in st.session_state:
+            st.session_state.consult_memo = st.session_state.get("consult_draft", "")
+        st.session_state.setdefault("consult_draft", st.session_state.consult_memo)
+        memo = st.text_area(
+            "電話や面談で使う相談メモ", key="consult_memo", height=145, max_chars=1500,
+            on_change=_remember_consultation_memo,
+        )
         st.download_button(
             "相談メモを保存", consultation_memo_download(memo, contacts, for_older), file_name="相談メモ.txt",
             mime="text/plain", on_click="ignore", disabled=not memo.strip(),
         )
         st.caption("メモは窓口への電話や面談で使えます。アプリから窓口へ自動送信されません。")
+    elif st.session_state.get("consult_draft"):
+        st.caption("前回と同じ条件に戻すと、書いていた相談メモを開けます。現在の条件で表示すると新しいメモを作ります。")
     st.markdown(
         "急病やけがで救急車が必要なときは **119**。つらさを人に話したいときは "
         "[＃いのちSOS](https://www.lifelink.or.jp/inochisos/?oai_link_source=model_response_hotline) に相談できます。"

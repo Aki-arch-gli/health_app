@@ -95,7 +95,7 @@ def render_dining():
         return
 
     if choice == "現在地":
-        st.caption("許可した場合、位置を丸めて距離計算と地図表示に使います。会員情報や健康記録には保存しません。")
+        st.caption("許可した場合、位置を丸めて距離計算と地図表示に使います。外食マップを離れると消去します。")
         location = LOCATE(key="dining_geolocation", on_position_change=lambda: None).position
         if isinstance(location, dict):
             lat, lon = location.get("lat"), location.get("lon")
@@ -107,6 +107,9 @@ def render_dining():
         origin = st.session_state.get("dining_location")
         if origin is None:
             return
+        if st.button("現在地の利用をやめる"):
+            st.session_state.pop("dining_location", None)
+            st.rerun()
     else:
         origin = areas[choice]
 
