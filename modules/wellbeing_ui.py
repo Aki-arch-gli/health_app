@@ -171,7 +171,7 @@ def render_measurements():
         return
     today = store.today_in_japan()
     current = store.measure_rows(owner, today, 1)
-    water = current[0][1] if current else None
+    water, weight, high, low = current[0][1:] if current else (None, None, None, None)
     st.subheader("今日の水分記録")
     st.write("まだ記録がありません。" if water is None else f"今日の記録　**{water:,} mL**")
     with st.container(horizontal=True):
@@ -181,6 +181,12 @@ def render_measurements():
                 st.rerun()
     with st.expander("水分・体重・血圧を入力する"):
         st.caption("入力した項目を今日の値として保存します。")
+        if weight is not None:
+            st.caption(f"保存済みの体重　{weight:g} kg")
+        if high is not None or low is not None:
+            high_label = high if high is not None else "未入力"
+            low_label = low if low is not None else "未入力"
+            st.caption(f"保存済みの血圧　上 {high_label} ／ 下 {low_label} mmHg")
         with st.form(f"wellbeing_measures_{today.isoformat()}"):
             a, b = st.columns(2)
             water_input = a.number_input("その日の水分量 (mL)", min_value=0, step=50, value=None, placeholder="未入力")
@@ -191,11 +197,29 @@ def render_measurements():
                 if all(value is None for value in (water_input, weight_input, high_input, low_input)):
                     st.info("記録したい項目を入力してください。")
                 else:
-                    store.save_measures(owner, today, water_input, weight_input, high_input, low_input)
-                    st.session_state.measure_saved = True
-                    st.rerun()
-    if st.session_state.pop("measure_saved", False):
-        st.success("入力した測定値を保存しました。")
+                    try:
+                        store.save_measures(owner, today, water_input, weight_input, high_input, low_input)
+                    except ValueError as error:
+                        st.warning(str(error))
+                    else:
+                        st.session_state.measure_notice = "入力した測定値を保存しました。"
+                        st.rerun()
+    existing = []
+    if water is not None:
+        existing.append("水分")
+    if weight is not None:
+        existing.append("体重")
+    if high is not None or low is not None:
+        existing.append("血圧")
+    if existing:
+        with st.expander("今日の記録を取り消す"):
+            kind_to_remove = st.selectbox("取り消す項目", existing, index=None, placeholder="項目を選ぶ")
+            if st.button("選んだ項目を取り消す", disabled=kind_to_remove is None):
+                store.clear_measure(owner, today, kind_to_remove)
+                st.session_state.measure_notice = f"今日の{kind_to_remove}の記録を取り消しました。"
+                st.rerun()
+    if notice := st.session_state.pop("measure_notice", None):
+        st.success(notice)
     st.subheader("測定値の推移")
     labels = {"水分": ["水分 (mL)"], "体重": ["体重 (kg)"], "血圧": ["上の血圧", "下の血圧"]}
     kind = st.segmented_control("表示する項目", list(labels), required=True, default="水分", key="wellbeing_measure_kind")

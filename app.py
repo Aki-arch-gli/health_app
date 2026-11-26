@@ -1403,6 +1403,8 @@ if next_tab in MAIN_PAGES:
     st.session_state.main_tab = next_tab
 main_tabs = st.tabs(list(MAIN_PAGES), key="main_tab", on_change="rerun")
 current_tab = st.session_state.main_tab or "ホーム"
+if current_tab != "ホーム":
+    st.session_state.pop("home_consultation_first", None)
 page = MAIN_PAGES[current_tab]
 st.session_state.current_page = page
 active_tab = main_tabs[list(MAIN_PAGES).index(current_tab)]
@@ -1419,6 +1421,12 @@ with active_tab:
     # ページ 1: 🏠 ホーム
     # =================================----------------------------------
     if page == "🏠 ホーム":
+        consultation_first = st.session_state.get("home_consultation_first", False)
+        if consultation_first:
+            render_consultation()
+            if st.button("食卓・今日の記録に戻る", key="home_consultation_back"):
+                st.session_state.pop("home_consultation_first", None)
+                st.rerun()
         if st.session_state.is_logged_in:
             render_today(open_login)
             with st.container(horizontal=True):
@@ -1433,7 +1441,8 @@ with active_tab:
         else:
             home_banner()
             render_today(open_login)
-        render_consultation()
+        if not consultation_first:
+            render_consultation()
         if not st.session_state.is_logged_in:
             st.divider()
             st.write("健康記録や交流機能は会員として利用できます。")

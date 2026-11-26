@@ -4,13 +4,15 @@ from urllib.error import URLError
 import streamlit as st
 
 from config import GEMINI_API_KEY, get_setting
+from modules import wellbeing
 from modules.dinner import (
-    ASSETS, FOODS, PANTRY, ROLES, ROOT, dinner_candidates, estimate_ingredient_cost,
+    ASSETS, FOODS, PANTRY, ROLES, ROOT, dinner_candidates, dinner_from_ids, estimate_ingredient_cost,
     estimate_meal_cost, meal_key, menu_photo, quantity, select_dinners, shopping_list,
     vegetable_grams, within_dinner_budget,
 )
 from modules.meal_print import build_meal_card
 from modules.runtime_paths import TRIAL_MODE
+from modules.wellbeing_ui import account_id
 from serve import select_questions
 
 with (ROOT / "data" / "support_directory.json").open(encoding="utf-8") as source:
@@ -24,6 +26,10 @@ DINNER_PRIORITIES = {
     "balanced_cost": "節約しながら野菜も",
     "cost": "食材費が安い順",
     "vegetables": "野菜が多い順",
+}
+BUDGET_BASES = {
+    "cost": "使う食材すべて",
+    "extra_cost": "買い足す食材だけ",
 }
 
 
@@ -45,6 +51,12 @@ def apply_theme(dark=False):
 
 def brand():
     st.html('<div class="kurashi-brand"><span aria-hidden="true">食</span>暮らしの食卓</div>')
+
+
+def open_consultation(topic):
+    st.session_state.next_main_tab = "ホーム"
+    st.session_state.consult_topic_seed = topic
+    st.session_state.home_consultation_first = True
 
 
 def home_banner():
@@ -71,7 +83,7 @@ def photo_for(text, meal_label=None):
     st.image(path, caption=caption, alt=f"{subject}の盛り付け例", width="stretch")
 
 
-def recipe_card(meal, people, label):
+def recipe_card(meal, people, label, stock=None):
     with st.container(border=True, key=f"recipe_{label}"):
         image, details = st.columns([1, 1.2], vertical_alignment="center")
         with image:
@@ -83,6 +95,10 @@ def recipe_card(meal, people, label):
             if cost is not None:
                 family_cost = f"（{people}人分 約{estimate_meal_cost(meal, people):,}円）" if people > 1 else ""
                 st.write(f"**食材費の目安　1人 約{cost:,}円**{family_cost}")
+            if stock is not None:
+                extra = estimate_ingredient_cost(shopping_list([meal], stock=stock))
+                if extra is not None:
+                    st.caption(f"買い足す食材の使用分　1人 約{extra:,}円")
             st.caption(f"使う野菜　1人分 約{vegetable_grams(meal)}g")
             for role, role_label in ROLES.items():
                 st.write(f"**{role_label}**　{meal[role]['title']}")
@@ -108,6 +124,28 @@ def _remember(meals):
     st.session_state.simple_dinner_history = history[-70:]
 
 
+def _dinner_favorites(owner):
+    if not owner:
+        return st.session_state.setdefault("simple_dinner_favorites", {})
+    favorites = {}
+    for key in wellbeing.dinner_favorite_keys(owner):
+        meal = dinner_from_ids(key[:3])
+        if meal is not None:
+            favorites[key] = (meal, key[3])
+    return favorites
+
+
+def _set_dinner_favorite(owner, key, item):
+    if owner:
+        wellbeing.set_dinner_favorite(owner, key, saved=item is not None)
+        return
+    favorites = _dinner_favorites(None)
+    if item is None:
+        favorites.pop(key, None)
+    else:
+        favorites[key] = item
+
+
 def render_dinner():
     st.subheader("食材から夕食を探す")
     with st.form("simple_dinner"):
@@ -116,8 +154,9 @@ def render_dinner():
         limit = second.selectbox("調理時間", [15, 20, 25, 40], index=1, format_func=lambda n: f"{n}分以内")
         count = third.selectbox("日数", [1, 7], format_func=lambda n: "今夜" if n == 1 else "1週間")
         budget, order = st.columns(2)
-        ceiling = budget.number_input("1人1食の予算（円・任意）", min_value=1, value=None, step=50, placeholder="例 250")
+        ceiling = budget.number_input("1人1食の予算（円・任意）", min_value=0, value=None, step=50, placeholder="例 250")
         priority = order.selectbox("優先すること", list(DINNER_PRIORITIES), format_func=DINNER_PRIORITIES.__getitem__)
+        cost_key = st.radio("予算の基準", list(BUDGET_BASES), format_func=BUDGET_BASES.__getitem__, horizontal=True)
         stock = st.multiselect("家にある食材", [food for food in FOODS if food not in PANTRY], placeholder="食材名を入力")
         with st.expander("使わない食材・基本の調味料"):
             excluded = st.multiselect("好みで使わない食材", FOODS, placeholder="食材名を入力")
@@ -126,20 +165,21 @@ def render_dinner():
         shopping = st.radio("買い足し", ["指定なし", "なるべく少なく", "買い足しなし"], horizontal=True)
         submitted = st.form_submit_button("献立を探す", type="primary")
     st.caption("時間は炊飯を除いた目安です。療養食や食物アレルギーは専門職や商品の原材料表示で確認してください。")
-    st.caption("予算は家にあるものも含めた食材の使用分です。アプリ内の参考単価で計算しており、お店の価格や袋・パックで買う金額とは異なります。")
+    st.caption("金額は使う分の参考額です。「買い足す食材だけ」を選ぶと、家にある食材を除いて計算します。袋やパック単位の支払額は店頭で確認してください。")
 
     if submitted:
         available = set(stock) | (PANTRY if pantry else {"水"})
         matching = dinner_candidates(limit, available, set(excluded), shopping == "買い足しなし")
-        candidates = within_dinner_budget(matching, ceiling)
+        candidates = within_dinner_budget(matching, ceiling, cost_key)
         st.session_state.simple_dinner_plan = {
             "candidates": candidates, "count": count, "people": people, "stock": available,
             "prefer_fewer": shopping == "なるべく少なく", "priority": priority, "ceiling": ceiling,
-            "lowest_cost": min((meal["cost"] for meal in matching if meal["cost"] is not None), default=None),
+            "cost_key": cost_key,
+            "lowest_cost": min((meal[cost_key] for meal in matching if meal[cost_key] is not None), default=None),
         }
         st.session_state.simple_dinner_results = select_dinners(
             candidates, count, st.session_state.get("simple_dinner_history", []),
-            shopping == "なるべく少なく", priority=priority,
+            shopping == "なるべく少なく", priority=priority, cost_key=cost_key,
         )
         _remember(st.session_state.simple_dinner_results)
     plan = st.session_state.get("simple_dinner_plan")
@@ -150,16 +190,17 @@ def render_dinner():
     count = plan["count"]
     candidates = plan["candidates"]
     priority = plan.get("priority", "variety")
+    cost_key = plan.get("cost_key", "cost")
+    if plan.get("ceiling") is not None:
+        st.caption(f"検索した予算　1人1食 {plan['ceiling']:,}円以内（{BUDGET_BASES[cost_key]}）")
     if not meals:
         lowest = plan.get("lowest_cost")
         if lowest is not None and plan.get("ceiling") is not None:
             st.info(f"この予算に収まる献立が見つかりませんでした。他の条件を保つと、最も安い候補は1人約{lowest:,}円です。")
         else:
             st.info("条件に合う献立がありませんでした。時間や手持ち食材を変えて探せます。")
-        if st.button("買い物や食事の用意を相談する", key="dinner_support"):
-            st.session_state.next_main_tab = "ホーム"
-            st.session_state.consult_topic_seed = "money" if plan.get("ceiling") is not None else "shopping"
-            st.rerun()
+        topic = "money" if plan.get("ceiling") is not None else "shopping"
+        st.button("買い物や食事の用意を相談する", key="dinner_support", on_click=open_consultation, args=(topic,))
         return
     if len(meals) < count:
         st.info(f"主菜が重ならない候補を{len(meals)}日分表示しています。")
@@ -167,29 +208,35 @@ def render_dinner():
         others = candidates
         if count == 1:
             others = [meal for meal in candidates if meal_key(meal) != meal_key(meals[0])]
-        meals = select_dinners(others, count, st.session_state.simple_dinner_history, plan["prefer_fewer"], discover=True, priority=priority)
+        meals = select_dinners(
+            others, count, st.session_state.simple_dinner_history, plan["prefer_fewer"],
+            discover=True, priority=priority, cost_key=cost_key,
+        )
         st.session_state.simple_dinner_results = meals
         _remember(meals)
 
-    favorites = st.session_state.setdefault("simple_dinner_favorites", {})
+    owner = account_id()
+    favorites = _dinner_favorites(owner)
+    if not owner:
+        st.caption("ゲストのお気に入りはこの画面を開いている間使えます。ログイン後に「お気に入り」で引き継げます。")
     for index, meal in enumerate(meals):
         label = "今夜の夕食" if count == 1 else f"{index + 1}日目の夕食"
-        recipe_card(meal, people, label)
+        recipe_card(meal, people, label, stock=plan["stock"])
         sides = [
             alternative for alternative in candidates if alternative["main"] == meal["main"]
             and alternative["staple"] == meal["staple"] and alternative["side"] != meal["side"]
         ]
         swap, favorite = st.columns(2)
         if swap.button("副菜を替える", key=f"simple_swap_{index}", disabled=not sides):
-            meals[index] = select_dinners(sides, 1, st.session_state.simple_dinner_history, plan["prefer_fewer"], priority=priority)[0]
+            meals[index] = select_dinners(
+                sides, 1, st.session_state.simple_dinner_history, plan["prefer_fewer"],
+                priority=priority, cost_key=cost_key,
+            )[0]
             _remember([meals[index]])
             st.rerun()
         key = (*meal_key(meal), people)
         if favorite.button("保存を取り消す" if key in favorites else "お気に入りに保存", key=f"simple_save_{index}"):
-            if key in favorites:
-                del favorites[key]
-            else:
-                favorites[key] = (meal, people)
+            _set_dinner_favorite(owner, key, None if key in favorites else (meal, people))
             st.rerun()
     items = shopping_list(meals, people, plan["stock"])
     st.markdown("#### 買い足すもの")
@@ -218,13 +265,20 @@ def render_dinner():
 
 
 def render_dinner_favorites():
-    favorites = st.session_state.get("simple_dinner_favorites", {})
+    owner = account_id()
+    guest_favorites = st.session_state.get("simple_dinner_favorites", {})
+    if owner and guest_favorites and st.button("ゲストで保存した夕食を引き継ぐ"):
+        for key in guest_favorites:
+            wellbeing.set_dinner_favorite(owner, key, saved=True)
+        st.session_state.pop("simple_dinner_favorites", None)
+        st.rerun()
+    favorites = _dinner_favorites(owner)
     if favorites:
         st.markdown("#### 保存した夕食")
     for number, (key, (meal, people)) in enumerate(favorites.items()):
         recipe_card(meal, people, f"保存した夕食 {number + 1}")
         if st.button("この夕食の保存を取り消す", key=f"forget_dinner_{key}"):
-            del favorites[key]
+            _set_dinner_favorite(owner, key, None)
             st.rerun()
 
 

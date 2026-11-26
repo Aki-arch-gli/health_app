@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 import streamlit as st
 
 from modules.dinner import ROOT
+from modules.kurashi_ui import open_consultation
 
 
 with (ROOT / "data" / "dining_directory.json").open(encoding="utf-8") as source:
@@ -109,11 +110,26 @@ def render_dining():
 
     left, right = st.columns(2)
     radius = left.selectbox("範囲（直線距離）", [1, 2, 3, 5], index=1, format_func=lambda km: f"{km}km以内")
-    ceiling = right.number_input("外食の予算（1人・円）", min_value=1, value=None, step=100, placeholder="例 600")
+    ceiling = right.number_input(
+        "外食の予算（1人・円）", min_value=1, value=None, step=100, placeholder="例 600", key="dining_ceiling",
+    )
     vegetables = st.checkbox("野菜料理付きの組み合わせだけ")
     matches = matching_places(origin, radius, ceiling, vegetables)
     if not matches:
-        st.info("この範囲と条件に合う登録店はありません。範囲や予算を変えるか、「別の地域」で地図検索できます。")
+        without_limit = matching_places(origin, radius, None, vegetables)
+        if without_limit:
+            lowest = min(meals[0]["price"] for _, _, meals in without_limit)
+            st.info(f"予算内のメニュー例はありませんでした。他の条件を保つと、登録店では税込{lowest:,}円からです。")
+            st.button("予算を外して見る", on_click=lambda: st.session_state.update(dining_ceiling=None))
+        elif matching_places(origin, radius, None, False):
+            st.info("この範囲の登録店では、野菜料理付きのメニュー例を確認できませんでした。")
+        else:
+            st.info("この範囲にはアプリの登録店がありません。登録範囲は西東京市です。")
+        area = choice if choice in areas else ""
+        term = "野菜料理 定食" if vegetables else "手頃な価格 ランチ 定食"
+        st.link_button("Google マップで近くのお店を探す", maps_search(f"{term} {area}".strip()))
+        if ceiling is not None:
+            st.button("食費のことを相談する", on_click=open_consultation, args=("money",))
         return
 
     pins = [{"lat": origin[0], "lon": origin[1], "color": "#235da4"}]

@@ -14,6 +14,7 @@ with (ROOT / "data" / "ingredient_prices.json").open(encoding="utf-8") as source
 RECIPES = DATA["recipes"]
 PANTRY = set(DATA["pantry"])
 ROLES = {"staple": "主食", "main": "主菜", "side": "副菜"}
+RECIPES_BY_ID = {role: {dish["id"]: dish for dish in recipes} for role, recipes in RECIPES.items()}
 FOODS = sorted({
     name for dishes in RECIPES.values() for dish in dishes
     for name, _, _ in dish["ingredients"]
@@ -52,6 +53,14 @@ def meal_key(meal):
     return tuple(meal[role]["id"] for role in ROLES)
 
 
+def dinner_from_ids(ids):
+    meal = {role: RECIPES_BY_ID[role].get(dish_id) for role, dish_id in zip(ROLES, ids, strict=True)}
+    if any(dish is None for dish in meal.values()):
+        return None
+    meal["minutes"] = sum(dish["minutes"] for dish in meal.values())
+    return meal
+
+
 def shopping_list(meals, people=1, stock=()):
     quantities = Counter()
     for meal in meals:
@@ -80,10 +89,10 @@ def vegetable_grams(meal):
     return round(sum(amount for name, amount, unit in shopping_list([meal]) if unit == "g" and name in VEGETABLES))
 
 
-def within_dinner_budget(candidates, ceiling):
+def within_dinner_budget(candidates, ceiling, cost_key="cost"):
     if ceiling is None:
         return candidates
-    return [meal for meal in candidates if meal["cost"] is not None and meal["cost"] <= ceiling]
+    return [meal for meal in candidates if meal[cost_key] is not None and meal[cost_key] <= ceiling]
 
 
 def dinner_candidates(limit, stock, excluded, no_shopping):
@@ -103,14 +112,16 @@ def dinner_candidates(limit, stock, excluded, no_shopping):
         if any(name in main_foods for name, _, _ in side["ingredients"]):
             continue
         meal = dict(staple=staple, main=main, side=side, minutes=minutes)
-        meal["missing"] = len({name for name, _, _ in shopping_list([meal], stock=stock)})
+        missing = shopping_list([meal], stock=stock)
+        meal["missing"] = len({name for name, _, _ in missing})
+        meal["extra_cost"] = estimate_ingredient_cost(missing)
         meal["cost"] = estimate_meal_cost(meal)
         meal["vegetables"] = vegetable_grams(meal)
         meals.append(meal)
     return meals
 
 
-def select_dinners(candidates, count, history, prefer_fewer=False, discover=False, priority="variety"):
+def select_dinners(candidates, count, history, prefer_fewer=False, discover=False, priority="variety", cost_key="cost"):
     seen_meals = set(history)
     recent_mains = {key[1] for key in history[-14:]}
     used_mains, sides, groups = set(), set(), set()
@@ -126,7 +137,7 @@ def select_dinners(candidates, count, history, prefer_fewer=False, discover=Fals
         )
         if priority == "variety":
             return (variety,)
-        cost = meal["cost"] if meal["cost"] is not None else float("inf")
+        cost = meal[cost_key] if meal[cost_key] is not None else float("inf")
         if priority == "cost":
             return (cost, variety)
         if priority == "vegetables":

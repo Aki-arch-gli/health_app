@@ -52,3 +52,33 @@ class WellbeingTests(unittest.TestCase):
         self.assertEqual(store.measure_rows("owner", self.day, 7), [
             (self.day.isoformat(), 350, 62.1, None, None),
         ])
+
+    def test_favorites_are_deduplicated_and_scoped_to_the_account(self):
+        key = ("rice", "tofu-sprout-egg", "cabbage", 2)
+        store.set_dinner_favorite("owner", key, saved=True)
+        store.set_dinner_favorite("owner", key, saved=True)
+        store.set_dinner_favorite("other", key, saved=True)
+        self.assertEqual(store.dinner_favorite_keys("owner"), [key])
+        store.set_dinner_favorite("owner", key, saved=False)
+        self.assertEqual(store.dinner_favorite_keys("owner"), [])
+        self.assertEqual(store.dinner_favorite_keys("other"), [key])
+
+    def test_measurement_correction_only_updates_selected_field_and_account(self):
+        store.save_measures("owner", self.day, 200, 62.1, 120, 75)
+        store.record_water("other", self.day, 200)
+        store.clear_measure("owner", self.day, "水分")
+        self.assertEqual(store.measure_rows("owner", self.day, 1), [
+            (self.day.isoformat(), None, 62.1, 120, 75),
+        ])
+        self.assertEqual(store.measure_rows("other", self.day, 1)[0][1], 200)
+        store.clear_measure("owner", self.day, "体重")
+        store.clear_measure("owner", self.day, "血圧")
+        self.assertEqual(store.measure_rows("owner", self.day, 1), [])
+
+    def test_inverted_pressure_does_not_overwrite_existing_values(self):
+        store.save_measures("owner", self.day, None, None, 120, 75)
+        with self.assertRaises(ValueError):
+            store.save_measures("owner", self.day, 200, None, None, 130)
+        self.assertEqual(store.measure_rows("owner", self.day, 1), [
+            (self.day.isoformat(), None, None, 120, 75),
+        ])

@@ -25,6 +25,7 @@ STEPS = (
 )
 INVITE_HOURS = 24
 PASSWORD_ITERATIONS = 600_000
+MEASURE_COLUMNS = {"水分": ("water",), "体重": ("weight",), "血圧": ("high", "low")}
 
 
 def today_in_japan():
@@ -61,7 +62,34 @@ def init_wellbeing():
                 owner TEXT NOT NULL, day TEXT NOT NULL, water INTEGER CHECK (water >= 0),
                 weight REAL, high INTEGER, low INTEGER, PRIMARY KEY (owner, day)
             );
+            CREATE TABLE IF NOT EXISTS dinner_favorites (
+                owner TEXT NOT NULL, staple TEXT NOT NULL, main TEXT NOT NULL, side TEXT NOT NULL,
+                people INTEGER NOT NULL CHECK (people BETWEEN 1 AND 6),
+                PRIMARY KEY (owner, staple, main, side, people)
+            );
         """)
+
+
+def dinner_favorite_keys(owner):
+    with closing(connect()) as db:
+        return db.execute(
+            "SELECT staple, main, side, people FROM dinner_favorites WHERE owner=? ORDER BY rowid DESC",
+            (owner,),
+        ).fetchall()
+
+
+def set_dinner_favorite(owner, key, saved):
+    with closing(connect()) as db, db:
+        if saved:
+            db.execute(
+                "INSERT INTO dinner_favorites VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                (owner, *key),
+            )
+        else:
+            db.execute(
+                "DELETE FROM dinner_favorites WHERE owner=? AND staple=? AND main=? AND side=? AND people=?",
+                (owner, *key),
+            )
 
 
 def _password_hash(password, salt):
@@ -246,12 +274,36 @@ def record_water(owner, day, amount):
 
 def save_measures(owner, day, water, weight, high, low):
     with closing(connect()) as db, db:
+        if high is not None or low is not None:
+            db.execute("BEGIN IMMEDIATE")
+            saved = db.execute(
+                "SELECT high, low FROM wellbeing_measures WHERE owner=? AND day=?",
+                (owner, day.isoformat()),
+            ).fetchone()
+            saved_high, saved_low = saved if saved else (None, None)
+            result_high = high if high is not None else saved_high
+            result_low = low if low is not None else saved_low
+            if result_high is not None and result_low is not None and result_high < result_low:
+                raise ValueError("上の血圧と下の血圧の入力を確認してください。")
         db.execute(
             """INSERT INTO wellbeing_measures VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT (owner, day) DO UPDATE SET
                  water=COALESCE(excluded.water, water), weight=COALESCE(excluded.weight, weight),
                  high=COALESCE(excluded.high, high), low=COALESCE(excluded.low, low)""",
             (owner, day.isoformat(), water, weight, high, low),
+        )
+
+
+def clear_measure(owner, day, kind):
+    columns = MEASURE_COLUMNS[kind]
+    reset_columns = ", ".join(f"{column}=NULL" for column in columns)
+    identity = (owner, day.isoformat())
+    with closing(connect()) as db, db:
+        db.execute(f"UPDATE wellbeing_measures SET {reset_columns} WHERE owner=? AND day=?", identity)
+        db.execute(
+            """DELETE FROM wellbeing_measures WHERE owner=? AND day=?
+               AND water IS NULL AND weight IS NULL AND high IS NULL AND low IS NULL""",
+            identity,
         )
 
 
