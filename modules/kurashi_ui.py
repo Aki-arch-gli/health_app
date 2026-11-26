@@ -1,5 +1,6 @@
 import json
 from urllib.error import URLError
+from urllib.parse import urlencode
 
 import streamlit as st
 
@@ -69,6 +70,7 @@ def home_banner():
                 st.session_state.next_main_tab = "献立"
                 st.rerun()
             st.html('<a href="#life-support">食費・健康の相談先を探す</a>')
+            st.button("地域包括支援センターを探す", on_click=open_consultation, args=("care",))
             if not st.session_state.get("is_logged_in"):
                 st.html('<a href="#today-check-in">今日のスタンプを試す ↓</a>')
         with art:
@@ -285,10 +287,13 @@ def render_dinner_favorites():
 def _older_contact(local, town):
     center = next((entry for entry in CONTACTS if town in entry["area"]), None) if local else None
     if center:
-        return {**center, "description": f"高齢の方やご家族の暮らし・介護の相談先です。担当地域は{'・'.join(center['area'])}です。"}
+        return {
+            **center,
+            "description": f"担当地域 {'・'.join(center['area'])}",
+            "hours": DIRECTORY["centerHours"],
+        }
     if local:
-        return dict(title="西東京市 地域包括支援センター", description="町名ごとの担当窓口を市のページで確認できます。",
-                    url=DIRECTORY["centersSource"])
+        return DIRECTORY["centersDesk"]
     return dict(title="お住まいの地域の地域包括支援センター",
                 description="高齢の方の介護や、食事・暮らしの相談ができます。ご家族からも相談できます。",
                 url=DIRECTORY["nationalCenters"])
@@ -324,6 +329,53 @@ def _consultation_contacts(topic, region, town, for_older):
         yield _older_contact(local, town)
 
 
+def _render_contact(contact):
+    st.subheader(contact["title"])
+    st.write(contact["description"])
+    if address := contact.get("address"):
+        st.write(address)
+        st.caption(f"開設時間 {contact['hours']} · 市公式情報 {DIRECTORY['centersCheckedOn']} 確認")
+    for phone, label in contact.get("phones", []):
+        st.markdown(f"[{label + ' ' if label else ''}{phone} に電話](tel:{phone})")
+    if contact.get("url") or address:
+        with st.container(horizontal=True):
+            if contact.get("url"):
+                st.link_button(contact.get("link", "公式ページを開く"), contact["url"])
+            if address:
+                st.link_button("地図で行き方を見る", "https://www.google.com/maps/dir/?" + urlencode({
+                    "api": 1, "destination": address,
+                }))
+
+
+def _center_call_guide(local, town):
+    with st.expander("初めての相談・つながらなかったとき"):
+        if local:
+            st.write("西東京市では相談は無料です。遠方の家族からも相談できます。来所前に電話で確認し、外出が難しいときは訪問相談が可能か尋ねてください。")
+        else:
+            st.write("本人が住む市区町村の担当センターに、電話や来所などの相談方法を確認してください。")
+        st.markdown(
+            "1. 電話では、本人が住む町名、本人との関係、いま一番困っていることを伝えます。\n"
+            "2. 別の窓口を案内されたら、つないでもらえるかを尋ねます。自分で連絡する場合は、窓口名・電話番号・連絡する時期を確認します。\n"
+            "3. 担当が分からないままなら、市区町村の高齢者福祉の窓口に確認します。"
+        )
+        if local and town in TOWNS:
+            _render_contact(DIRECTORY["centersDesk"])
+        elif not local:
+            st.link_button("厚生労働省のセンター検索の使い方を見る", DIRECTORY["nationalCentersHelp"])
+
+
+def consultation_memo_download(memo, contacts, for_older):
+    lines = [memo.strip(), "", "相談先の控え"]
+    for contact in contacts:
+        lines.append(contact["title"])
+        lines.extend(f"{label + ' ' if label else ''}{number}" for number, label in contact.get("phones", []))
+        lines.extend(contact[key] for key in ("address", "hours", "url") if contact.get(key))
+        lines.append("")
+    if for_older:
+        lines.extend(("連絡した日", "案内された窓口・電話番号", "次に連絡する日"))
+    return "\n".join(lines)
+
+
 def render_consultation():
     st.header("暮らしの困りごとを相談する", anchor="life-support")
     st.write("食費や食事の心配が重なっていたり、使える制度がわからなかったりするときも、相談先を探せます。")
@@ -338,25 +390,36 @@ def render_consultation():
         and st.checkbox("高齢のご本人や、ご家族のことも相談したい")
     )
     town = st.selectbox("相談したい方が住む町名（任意）", ["選ばずに探す", *TOWNS]) if region == "西東京市" and for_older else None
+    relationship = channel = None
+    if for_older:
+        st.caption("離れて暮らす家族について相談するときは、その方が住む地域を選びます。")
+        left, right = st.columns(2)
+        relationship = left.selectbox("相談する方（任意）", ["本人", "家族", "知人・支援者"], index=None, placeholder="選ばずに進めます")
+        channel = right.selectbox("希望する相談方法（任意）", ["電話", "来所", "訪問について相談したい"], index=None, placeholder="選ばずに進めます")
     circumstances = st.multiselect("当てはまること（任意）", topic_data["options"], key=f"consult_{topic}_options", placeholder="当てはまる項目を選ぶ")
-    selection = (topic, region, town, for_older, tuple(circumstances))
+    selection = (topic, region, town, for_older, tuple(circumstances), relationship, channel)
     if st.button("相談先とメモを見る", key="show_consultation", type="primary"):
         st.session_state.consult_selection = selection
         st.session_state.consult_consent = False
         about = "、".join(circumstances) or topic_data["label"]
-        st.session_state.consult_memo = f"「{about}」のことで相談したいです。\n{topic_data['firstQuestion']}。"
+        notes = [f"「{about}」のことで相談したいです。", f"{topic_data['firstQuestion']}。"]
+        if town in TOWNS:
+            notes.append(f"相談したい方が住む町名　{town}")
+        if relationship:
+            notes.append(f"相談する方　{relationship}")
+        if channel:
+            notes.append(f"希望する相談方法　{channel}")
+        st.session_state.consult_memo = "\n".join(notes)
         st.session_state.consult_added = []
     if st.session_state.get("consult_selection") == selection:
         if "今日食べるものの用意が難しい" in circumstances:
             st.info("相談の最初に「今日食べるものの用意が難しい」と伝え、今利用できる食料支援があるか尋ねてください。")
-        for contact in _consultation_contacts(topic, region, town, for_older):
+        contacts = list(_consultation_contacts(topic, region, town, for_older))
+        for contact in contacts:
             with st.container(border=True):
-                st.subheader(contact["title"])
-                st.write(contact["description"])
-                for phone, label in contact.get("phones", []):
-                    st.markdown(f"[{label + ' ' if label else ''}{phone} に電話](tel:{phone})")
-                if contact.get("url"):
-                    st.link_button(contact.get("link", "公式ページを開く"), contact["url"])
+                _render_contact(contact)
+        if for_older:
+            _center_call_guide(region == "西東京市", town)
         ai_enabled = not TRIAL_MODE and bool(GEMINI_API_KEY and str(get_setting("ENABLE_LOCAL_CONSULT_AI", "")).lower() in {"1", "true"})
         if ai_enabled:
             consent = st.checkbox("私は18歳以上です。選択したテーマと項目をGeminiへ送ることに同意します。", key="consult_consent")
@@ -374,7 +437,10 @@ def render_consultation():
                 except (URLError, OSError, ValueError, KeyError, TypeError, AttributeError, IndexError):
                     st.warning("AIに接続できませんでした。相談先と作成済みのメモは引き続き使えます。")
         memo = st.text_area("電話や面談で使う相談メモ", key="consult_memo", height=145, max_chars=1500)
-        st.download_button("相談メモを保存", memo, file_name="相談メモ.txt", mime="text/plain", on_click="ignore", disabled=not memo.strip())
+        st.download_button(
+            "相談メモを保存", consultation_memo_download(memo, contacts, for_older), file_name="相談メモ.txt",
+            mime="text/plain", on_click="ignore", disabled=not memo.strip(),
+        )
         st.caption("メモは窓口への電話や面談で使えます。アプリから窓口へ自動送信されません。")
     st.markdown(
         "急病やけがで救急車が必要なときは **119**。つらさを人に話したいときは "

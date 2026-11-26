@@ -2,6 +2,7 @@
   "centers": [
     {
       "title": "栄町地域包括支援センター",
+      "address": "東京都西東京市栄町3-6-2 保谷苑内",
       "phones": [
         [
           "042-438-7090",
@@ -19,6 +20,7 @@
     },
     {
       "title": "富士町地域包括支援センター",
+      "address": "東京都西東京市富士町1-7-69 高齢者センターきらら内",
       "phones": [
         [
           "042-451-1203",
@@ -35,6 +37,7 @@
     },
     {
       "title": "泉町地域包括支援センター",
+      "address": "東京都西東京市泉町2-1-24 ピアライフ・アルファ1階",
       "phones": [
         [
           "042-424-1200",
@@ -51,6 +54,7 @@
     },
     {
       "title": "田無町地域包括支援センター",
+      "address": "東京都西東京市田無町5-5-12 田無総合福祉センター内",
       "phones": [
         [
           "042-467-8850",
@@ -66,6 +70,7 @@
     },
     {
       "title": "緑町地域包括支援センター",
+      "address": "東京都西東京市緑町3-6-1 田無病院内",
       "phones": [
         [
           "042-461-7081",
@@ -82,6 +87,7 @@
     },
     {
       "title": "西原町地域包括支援センター",
+      "address": "東京都西東京市西原町4-5-6 西原総合教育施設内",
       "phones": [
         [
           "042-451-8844",
@@ -97,6 +103,7 @@
     },
     {
       "title": "向台町地域包括支援センター",
+      "address": "東京都西東京市向台町2-16-22 フローラ田無内",
       "phones": [
         [
           "042-468-2340",
@@ -112,6 +119,7 @@
     },
     {
       "title": "新町地域包括支援センター",
+      "address": "東京都西東京市新町1-11-25 尚和緑寿内",
       "phones": [
         [
           "042-462-1695",
@@ -127,8 +135,17 @@
       "link": "市公式ページで受付時間を見る"
     }
   ],
-  "centersSource": "https://www.city.nishitokyo.lg.jp/kenko_hukusi/koreisyasien/chiikihoukatu.html",
+  "centersCheckedOn": "2026-11-26",
+  "centerHours": "9:00〜18:00（日曜・祝日・年末年始を除く）",
+  "centersDesk": {
+    "title": "西東京市 高齢者支援課 地域支援係",
+    "description": "担当センターが分からないときや、連絡しても相談先が決まらないときに、次の連絡先を確認できます。",
+    "phones": [["042-420-2811", "地域支援係"]],
+    "url": "https://www.city.nishitokyo.lg.jp/kenko_hukusi/koreisyasien/chiikihoukatu.html",
+    "link": "西東京市の担当センター一覧を見る"
+  },
   "nationalCenters": "https://www.kaigokensaku.mhlw.go.jp/",
+  "nationalCentersHelp": "https://www.kaigokensaku.mhlw.go.jp/help/life/page1.html",
   "nationalLiving": "https://www.mhlw.go.jp/stf/newpage_08152.html",
   "localGeneral": {
     "title": "西東京市 福祉丸ごと相談窓口（ほっとネットステーション）",
@@ -206,7 +223,10 @@
       "options": [
         "家族の介護に負担を感じる",
         "離れて暮らす家族が心配",
-        "誰に相談するか迷っている"
+        "誰に相談するか迷っている",
+        "一人で暮らす本人の食事や買い物が心配",
+        "もの忘れや今後の生活が心配",
+        "仕事と介護の両立に困っている"
       ],
       "firstQuestion": "本人や家族が受けられる支援には何がありますか"
     },

@@ -1,10 +1,20 @@
 {
-  "checked_on": "2026-11-24",
+  "checked_on": "2026-11-26",
   "areas": {
     "田無駅周辺": [35.7275, 139.5393],
     "ひばりヶ丘駅周辺": [35.7518, 139.5451],
     "保谷駅周辺": [35.7478, 139.5680],
-    "東伏見駅周辺": [35.7285, 139.5639]
+    "東伏見駅周辺": [35.7285, 139.5639],
+    "東久留米駅周辺": [35.7605, 139.5339],
+    "武蔵境駅周辺": [35.7023, 139.5445],
+    "花小金井駅周辺": [35.7265, 139.5131]
+  },
+  "categories": {
+    "matsuya": "丼・定食",
+    "saizeriya": "洋食",
+    "hidakaya": "ラーメン・中華",
+    "yoshinoya": "丼・定食",
+    "marugame": "うどん"
   },
   "menus": {
     "matsuya": [
@@ -40,6 +50,54 @@
         "vegetables": true,
         "sources": ["https://www.saizeriya.co.jp/menu-popular/"]
       }
+    ],
+    "hidakaya": [
+      {
+        "title": "中華そば",
+        "price": 420,
+        "vegetables": false,
+        "sources": ["https://hidakaya.hiday.co.jp/hits/ja/menu/1/list/1.html"]
+      },
+      {
+        "title": "野菜たっぷりタンメン（麺少なめ）",
+        "price": 590,
+        "vegetables": true,
+        "sources": ["https://hidakaya.hiday.co.jp/hits/ja/menu/1/list/1.html"]
+      },
+      {
+        "title": "野菜たっぷりタンメン",
+        "price": 620,
+        "vegetables": true,
+        "sources": ["https://hidakaya.hiday.co.jp/hits/ja/menu/1/list/1.html"]
+      }
+    ],
+    "yoshinoya": [
+      {
+        "title": "牛丼（並盛）",
+        "price": 498,
+        "vegetables": false,
+        "sources": ["https://www.yoshinoya.com/menu/gyudon/gyu-don/"]
+      },
+      {
+        "title": "牛丼（並盛）＋サラダセット",
+        "price": 715,
+        "vegetables": true,
+        "sources": ["https://www.yoshinoya.com/menu/gyudon/gyu-don/", "https://www.yoshinoya.com/menu/sidemenu/saladset/"]
+      }
+    ],
+    "marugame": [
+      {
+        "title": "かけうどん（並）",
+        "price": 390,
+        "vegetables": false,
+        "sources": ["https://jp.marugame.com/campaign/2026fall/"]
+      },
+      {
+        "title": "かけうどん（並）＋野菜かき揚げ",
+        "price": 590,
+        "vegetables": true,
+        "sources": ["https://jp.marugame.com/campaign/2026fall/", "https://jp.marugame.com/menu/tempura/"]
+      }
     ]
   },
   "places": [
@@ -48,6 +106,20 @@
     {"name": "松屋 ひばりが丘店", "group": "matsuya", "lat": 35.751954, "lon": 139.545121, "url": "https://pkg.navitime.co.jp/matsuyafoods/spot/detail?code=0000000084"},
     {"name": "サイゼリヤ ひばりが丘駅南口駅前通り店", "group": "saizeriya", "lat": 35.750396, "lon": 139.544637, "url": "https://shop.saizeriya.co.jp/sz_restaurant/spot/detail?code=0840"},
     {"name": "松屋 保谷店", "group": "matsuya", "lat": 35.747809, "lon": 139.567968, "url": "https://pkg.navitime.co.jp/matsuyafoods/spot/detail?code=0000000274"},
-    {"name": "松屋 東伏見店", "group": "matsuya", "lat": 35.728515, "lon": 139.563914, "url": "https://pkg.navitime.co.jp/matsuyafoods/spot/detail?code=0000000866"}
+    {"name": "松屋 東伏見店", "group": "matsuya", "lat": 35.728515, "lon": 139.563914, "url": "https://pkg.navitime.co.jp/matsuyafoods/spot/detail?code=0000000866"},
+    {"name": "日高屋 田無アスタ店", "group": "hidakaya", "lat": 35.72848, "lon": 139.5399, "url": "https://hidakaya.hiday.co.jp/hits/ja/shop/1/detail/280.html"},
+    {"name": "日高屋 ひばりヶ丘北口店", "group": "hidakaya", "lat": 35.75185, "lon": 139.5458, "url": "https://hidakaya.hiday.co.jp/hits/ja/shop/99/detail/542.html"},
+    {"name": "吉野家 ひばりが丘店", "group": "yoshinoya", "lat": 35.752269, "lon": 139.544624, "url": "https://stores.yoshinoya.com/yoshinoya/spot/detail?code=ysn_061501"},
+    {"name": "日高屋 東久留米東口店", "group": "hidakaya", "lat": 35.7602, "lon": 139.5346, "url": "https://hidakaya.hiday.co.jp/hits/ja/shop/99/detail/384.html"},
+    {"name": "サイゼリヤ 東久留米駅西口店", "group": "saizeriya", "lat": 35.760756, "lon": 139.533168, "url": "https://shop.saizeriya.co.jp/sz_restaurant/spot/detail?code=1070"},
+    {"name": "サイゼリヤ イオンモール東久留米", "group": "saizeriya", "lat": 35.74504, "lon": 139.527356, "url": "https://shop.saizeriya.co.jp/sz_restaurant/spot/detail?code=1520"},
+    {"name": "丸亀製麺 イオンモール東久留米", "group": "marugame", "lat": 35.745038, "lon": 139.5273564, "url": "https://stores.marugame.com/110877"},
+    {"name": "サイゼリヤ いなげや武蔵野関前店", "group": "saizeriya", "lat": 35.711931, "lon": 139.544249, "url": "https://shop.saizeriya.co.jp/sz_restaurant/spot/detail?code=0887"},
+    {"name": "日高屋 武蔵境北口店", "group": "hidakaya", "lat": 35.70328, "lon": 139.5441, "url": "https://hidakaya.hiday.co.jp/hits/ja/shop/1/detail/161.html"},
+    {"name": "吉野家 武蔵境店", "group": "yoshinoya", "lat": 35.702664, "lon": 139.544319, "url": "https://stores.yoshinoya.com/yoshinoya/spot/detail?code=ysn_061499"},
+    {"name": "丸亀製麺 武蔵境", "group": "marugame", "lat": 35.7043963, "lon": 139.5466291, "url": "https://stores.marugame.com/110710"},
+    {"name": "サイゼリヤ 花小金井店", "group": "saizeriya", "lat": 35.730496, "lon": 139.505484, "url": "https://shop.saizeriya.co.jp/sz_restaurant/spot/detail?code=0365"},
+    {"name": "丸亀製麺 小平", "group": "marugame", "lat": 35.7305751, "lon": 139.5016788, "url": "https://stores.marugame.com/110329"},
+    {"name": "サイゼリヤ 新座栗原店", "group": "saizeriya", "lat": 35.761283, "lon": 139.550034, "url": "https://shop.saizeriya.co.jp/sz_restaurant/spot/detail?code=0092"}
   ]
 }

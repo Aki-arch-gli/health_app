@@ -59,9 +59,11 @@ def straight_line_km(origin, destination):
     return 6371 * 2 * asin(sqrt(min(1.0, square)))
 
 
-def matching_places(origin, radius_km, ceiling, vegetables_only):
+def matching_places(origin, radius_km, ceiling, vegetables_only, category=None):
     options = []
     for place in DIRECTORY["places"]:
+        if category is not None and DIRECTORY["categories"][place["group"]] != category:
+            continue
         distance = straight_line_km(origin, (place["lat"], place["lon"]))
         if distance > radius_km:
             continue
@@ -80,7 +82,7 @@ def maps_search(query):
 
 def render_dining():
     st.subheader("近くの外食マップ")
-    st.write("西東京市の登録店から、予算に合うメニュー例や野菜料理を足せる組み合わせを探せます。")
+    st.write(f"西東京市と近隣の登録店{len(DIRECTORY['places'])}件から、予算に合うメニュー例を探せます。")
     areas = DIRECTORY["areas"]
     choice = st.selectbox("探す場所", [*areas, "現在地", "別の地域"], key="dining_area")
     if choice != "現在地":
@@ -113,18 +115,22 @@ def render_dining():
     ceiling = right.number_input(
         "外食の予算（1人・円）", min_value=1, value=None, step=100, placeholder="例 600", key="dining_ceiling",
     )
+    left, right = st.columns(2)
+    categories = sorted(set(DIRECTORY["categories"].values()))
+    category = left.selectbox("料理の種類", [None, *categories], format_func=lambda name: name or "指定なし")
+    sort = right.radio("並べ方", ["近い順", "掲載メニューが安い順"], horizontal=True)
     vegetables = st.checkbox("野菜料理付きの組み合わせだけ")
-    matches = matching_places(origin, radius, ceiling, vegetables)
+    matches = matching_places(origin, radius, ceiling, vegetables, category)
     if not matches:
-        without_limit = matching_places(origin, radius, None, vegetables)
+        without_limit = matching_places(origin, radius, None, vegetables, category)
         if without_limit:
             lowest = min(meals[0]["price"] for _, _, meals in without_limit)
             st.info(f"予算内のメニュー例はありませんでした。他の条件を保つと、登録店では税込{lowest:,}円からです。")
             st.button("予算を外して見る", on_click=lambda: st.session_state.update(dining_ceiling=None))
         elif matching_places(origin, radius, None, False):
-            st.info("この範囲の登録店では、野菜料理付きのメニュー例を確認できませんでした。")
+            st.info("この範囲に登録店はあります。料理の種類や野菜料理の条件を変えると、別の候補を探せます。")
         else:
-            st.info("この範囲にはアプリの登録店がありません。登録範囲は西東京市です。")
+            st.info("この範囲にはアプリの登録店がありません。掲載エリアは西東京市と近隣です。")
         area = choice if choice in areas else ""
         term = "野菜料理 定食" if vegetables else "手頃な価格 ランチ 定食"
         st.link_button("Google マップで近くのお店を探す", maps_search(f"{term} {area}".strip()))
@@ -132,6 +138,9 @@ def render_dining():
             st.button("食費のことを相談する", on_click=open_consultation, args=("money",))
         return
 
+    if sort == "掲載メニューが安い順":
+        matches.sort(key=lambda match: (match[2][0]["price"], match[1]))
+    st.write(f"条件に合う登録店 **{len(matches)}件**")
     pins = [{"lat": origin[0], "lon": origin[1], "color": "#235da4"}]
     pins += [{"lat": place["lat"], "lon": place["lon"], "color": "#2d6040"} for place, _, _ in matches]
     st.map(pins, color="color", size=50, height=350, alt="外食候補の位置と検索の出発点")
@@ -140,7 +149,8 @@ def render_dining():
     for place, distance, meals in matches:
         with st.container(border=True):
             st.markdown(f"**{place['name']}**")
-            st.caption(f"出発点から直線 約{round(distance * 1000 / 10) * 10:,}m")
+            cuisine = DIRECTORY["categories"][place["group"]]
+            st.caption(f"{cuisine}　出発点から直線 約{round(distance * 1000 / 10) * 10:,}m")
             for meal in meals:
                 st.write(f"{meal['title']}　**{meal['price']:,}円**")
                 links = [f"[公式メニュー {index}]({url})" for index, url in enumerate(meal["sources"], 1)]
